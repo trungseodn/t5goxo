@@ -1,0 +1,220 @@
+import { Body, Controller, Post, Get, Param, UseGuards, Request, Put, Delete, Patch, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as path from 'path';
+import * as fs from 'fs';
+import { ztteam_getStorageRoot } from '../common/ztteam_storage.util';
+import { ZTTeamFacebookService } from './facebook.service';
+import { ZTTeamAuthGuard } from '../auth/auth.guard';
+const { diskStorage } = require('multer');
+
+@Controller('facebook')
+@UseGuards(ZTTeamAuthGuard)
+export class ZTTeamFacebookController {
+  constructor(private facebookService: ZTTeamFacebookService) {}
+
+  @Post('exchange-token')
+  ztteam_exchangeToken(@Body() body: { shortToken: string }, @Request() req: any) {
+    console.log('--- FB EXCHANGE TOKEN CALLED ---', body, req.user);
+    return this.facebookService.ztteam_exchangeLongLivedToken(body.shortToken, req.user.sub);
+  }
+
+  @Post('connect-bm-token')
+  ztteam_connectBMToken(@Body() body: { token: string }, @Request() req: any) {
+    return this.facebookService.ztteam_connectBMToken(body.token, req.user.sub);
+  }
+
+  @Get('businesses')
+  ztteam_getBusinesses(@Request() req: any) {
+    return this.facebookService.ztteam_getBusinessesWithAssets(req.user.sub);
+  }
+
+  @Post('pages/:fbAccountId/fetch')
+  ztteam_fetchPages(@Param('fbAccountId') fbAccountId: string, @Request() req: any) {
+    return this.facebookService.ztteam_fetchPages(fbAccountId, req.user.sub);
+  }
+
+  @Get('pages')
+  ztteam_getPages(@Request() req: any) {
+    return this.facebookService.ztteam_getConnectedPages(req.user.sub);
+  }
+
+  @Post('pages/bulk-assign-sources')
+  ztteam_bulkAssignSources(
+    @Body() body: {
+      pageIds: string[];
+      targetSiteId: string;
+      targetCategoryId?: string | null;
+      mode?: 'replace' | 'append';
+    },
+    @Request() req: any
+  ) {
+    return this.facebookService.ztteam_bulkAssignSources(req.user.sub, body);
+  }
+
+  @Post('pages/bulk-apply-schedule')
+  ztteam_bulkApplySchedule(
+    @Body()
+    body: {
+      pageIds: string[];
+      postsPerDay?: number;
+      customTimes?: string[];
+      postFormat?: 'image' | 'reel' | 'mixed';
+      videoEngine?: 'hook_image' | 'text_story' | 'muse';
+      defaultBgm?: string;
+      autoPublishEnabled?: boolean;
+      defaultReelTemplateId?: string | null;
+      linkMode?: 'view_threshold' | 'delayed_2step' | 'immediate' | 'none';
+      linkViewThreshold?: number;
+      linkTargetPosition?: 'comment' | 'caption' | 'both';
+      linkFallbackHours?: number;
+      linkFallbackAction?: 'inject' | 'skip';
+    },
+    @Request() req: any
+  ) {
+    return this.facebookService.ztteam_bulkApplySchedule(req.user.sub, body);
+  }
+
+  @Post('pages/:pageId/test-post')
+  ztteam_testPost(@Param('pageId') pageId: string, @Body() body: { message: string }, @Request() req: any) {
+    return this.facebookService.ztteam_testPost(pageId, req.user.sub, body.message);
+  }
+
+  @Put('pages/:pageId/settings')
+  ztteam_updatePageSettings(@Param('pageId') pageId: string, @Body() body: any, @Request() req: any) {
+    return this.facebookService.ztteam_updatePageSettings(pageId, req.user.sub, body);
+  }
+
+  @Get('pages/:pageId/settings')
+  ztteam_getPageSettings(@Param('pageId') pageId: string, @Request() req: any) {
+    return this.facebookService.ztteam_getPageSettings(pageId, req.user.sub);
+  }
+
+  @Get('pages/:pageId/report')
+  ztteam_getPageReport(@Param('pageId') pageId: string, @Request() req: any) {
+    return this.facebookService.ztteam_getPageInsights(pageId, req.user.sub);
+  }
+
+  @Get('pages/:pageId/top-posts')
+  ztteam_getTopPosts(@Param('pageId') pageId: string, @Request() req: any) {
+    return this.facebookService.ztteam_getTopPosts(pageId, req.user.sub);
+  }
+
+  @Delete('pages/:pageId')
+  ztteam_deletePage(@Param('pageId') pageId: string, @Request() req: any) {
+    return this.facebookService.ztteam_deletePage(pageId, req.user.sub);
+  }
+
+  @Put('pages/:pageId/toggle-active')
+  ztteam_togglePageActive(@Param('pageId') pageId: string, @Body() body: { isActive: boolean }, @Request() req: any) {
+    return this.facebookService.ztteam_togglePageActive(pageId, req.user.sub, body.isActive);
+  }
+
+  @Get('accounts')
+  ztteam_getAccounts(@Request() req: any) {
+    return this.facebookService.ztteam_getConnectedAccounts(req.user.sub);
+  }
+
+  @Delete('accounts/:accountId')
+  ztteam_deleteAccount(@Param('accountId') accountId: string, @Request() req: any) {
+    return this.facebookService.ztteam_deleteAccount(accountId, req.user.sub);
+  }
+
+  @Post('accounts/check-health')
+  ztteam_checkAllAccountsHealth(@Request() req: any) {
+    return this.facebookService.ztteam_checkAccountHealth(req.user.sub);
+  }
+
+  @Post('accounts/:accountId/check-health')
+  ztteam_checkSingleAccountHealth(@Param('accountId') accountId: string, @Request() req: any) {
+    return this.facebookService.ztteam_checkAccountHealth(req.user.sub, accountId);
+  }
+
+  @Post('pages/:pageId/posts/:postId/auto-comment')
+  async autoComment(
+    @Param('pageId') pageId: string,
+    @Param('postId') postId: string,
+    @Request() req: any,
+    @Body('manualLink') manualLink?: string
+  ) {
+    return this.facebookService.ztteam_autoCommentLink(pageId, postId, manualLink);
+  }
+
+  @Post('pages/bulk-update-category')
+  ztteam_bulkUpdateCategory(@Body() body: { pageIds: string[]; category: string }) {
+    return this.facebookService.ztteam_bulkUpdateCategory(body?.pageIds || [], body?.category || '');
+  }
+
+  @Post('pages/branding/batch-generate')
+  ztteam_batchGenerateBranding(
+    @Body() body: { limit?: number; overwriteExisting?: boolean; pageIds?: string[] }
+  ) {
+    return this.facebookService.ztteam_batchGenerateBranding(body || {});
+  }
+
+  @Post('pages/branding/batch-apply')
+  ztteam_batchApplyBranding(
+    @Body() body: { pageIds?: string[]; delayMs?: number }
+  ) {
+    return this.facebookService.ztteam_batchApplyBranding(body || {});
+  }
+
+  @Patch('pages/:pageId/category')
+  ztteam_updatePageCategory(
+    @Param('pageId') pageId: string,
+    @Body('category') category: string
+  ) {
+    return this.facebookService.ztteam_updatePageCategory(pageId, category);
+  }
+
+  @Post('pages/:pageId/branding/upload')
+  @UseInterceptors(FileInterceptor('file', {
+    storage: diskStorage({
+      destination: (req: any, file: any, cb: any) => {
+        const uploadDir = path.join(ztteam_getStorageRoot(), 'branding');
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+      },
+      filename: (req: any, file: any, cb: any) => {
+        const ext = path.extname(file?.originalname || '') || '.png';
+        const type = req.body?.type || 'branding';
+        cb(null, `${type}_manual_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`);
+      }
+    }),
+    limits: { fileSize: 20 * 1024 * 1024 } /** 20MB tối đa */
+  }))
+  async ztteam_uploadBranding(
+    @Param('pageId') pageId: string,
+    @UploadedFile() file: any,
+    @Body('type') type: 'avatar' | 'cover'
+  ) {
+    return this.facebookService.ztteam_uploadBrandingImage(pageId, file, type);
+  }
+
+  @Post('pages/:pageId/branding/generate')
+  ztteam_generateBranding(@Param('pageId') pageId: string) {
+    return this.facebookService.ztteam_generatePageBranding(pageId);
+  }
+
+  @Post('pages/:pageId/branding/regenerate-item')
+  ztteam_regenerateBrandingItem(
+    @Param('pageId') pageId: string,
+    @Body() body: { type: 'avatar' | 'cover'; prompt?: string }
+  ) {
+    return this.facebookService.ztteam_regenerateBrandingItem(pageId, body.type, body.prompt);
+  }
+
+  @Post('pages/:pageId/branding/apply')
+  ztteam_applyBranding(
+    @Param('pageId') pageId: string,
+    @Body() body: {
+      avatarUrl?: string;
+      coverUrl?: string;
+      avatarLocalPath?: string;
+      coverLocalPath?: string;
+    }
+  ) {
+    return this.facebookService.ztteam_applyPageBranding(pageId, body);
+  }
+}
