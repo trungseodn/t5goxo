@@ -134,36 +134,60 @@ export class ZTTeamPublisherCron {
           continue;
         }
 
-        /** Lấy bài đăng gần nhất (thành công HOẶC thất bại) của Page này để tính khoảng cách thời gian */
+        /** Lấy bài đăng thành công gần nhất của Page này để tính khoảng cách thời gian và lượt trước là reel hay image */
         const lastPostedReel = await this.prisma.ztteam_reels.findFirst({
           where: {
             page_id: pageId,
-            OR: [{ is_posted: true }, { status: 'FAILED' }]
+            is_posted: true,
           },
-          orderBy: { updated_at: 'desc' }
+          orderBy: { posted_at: 'desc' }
         });
         const lastPostedImage = await this.prisma.ztteam_images.findFirst({
           where: {
             page_id: pageId,
-            OR: [{ is_posted: true }, { status: 'FAILED' }]
+            is_posted: true,
           },
-          orderBy: { updated_at: 'desc' }
+          orderBy: { posted_at: 'desc' }
         });
 
         let lastPostTime: Date | null = null;
         let lastPostType: 'reel' | 'image' | null = null;
 
-        if (lastPostedReel) {
-          /** Dùng updated_at thay vì posted_at vì có thể nó là FAILED */
-          lastPostTime = new Date(lastPostedReel.updated_at);
+        if (lastPostedReel?.posted_at) {
+          lastPostTime = new Date(lastPostedReel.posted_at);
           lastPostType = 'reel';
         }
-        if (lastPostedImage) {
-          const imageTime = new Date(lastPostedImage.updated_at);
+        if (lastPostedImage?.posted_at) {
+          const imageTime = new Date(lastPostedImage.posted_at);
           if (!lastPostTime || imageTime > lastPostTime) {
             lastPostTime = imageTime;
             lastPostType = 'image';
           }
+        }
+
+        /** Kiểm tra xem có lần thử đăng thất bại nào gần đây (trong vòng 5 phút) để tránh spam API */
+        const recentFailedReel = await this.prisma.ztteam_reels.findFirst({
+          where: {
+            page_id: pageId,
+            status: 'FAILED',
+            is_posted: false,
+            updated_at: { gte: new Date(now.getTime() - 5 * 60 * 1000) }
+          },
+          orderBy: { updated_at: 'desc' }
+        });
+        const recentFailedImage = await this.prisma.ztteam_images.findFirst({
+          where: {
+            page_id: pageId,
+            status: 'FAILED',
+            is_posted: false,
+            updated_at: { gte: new Date(now.getTime() - 5 * 60 * 1000) }
+          },
+          orderBy: { updated_at: 'desc' }
+        });
+
+        if (recentFailedReel || recentFailedImage) {
+          this.logger.warn(`Page ${page.name}: Có lượt thử đăng thất bại trong vòng 5 phút qua. Tạm hoãn để bảo vệ an toàn cho Page.`);
+          continue;
         }
 
         const diffMinutesFromLastPost = lastPostTime ? Math.floor((now.getTime() - lastPostTime.getTime()) / 60000) : Infinity;
@@ -178,6 +202,7 @@ export class ZTTeamPublisherCron {
               hour: 'numeric',
               minute: 'numeric',
               hour12: false,
+              hourCycle: 'h23',
             });
             const parts = vnFormatter.formatToParts(now);
             const vnH = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
