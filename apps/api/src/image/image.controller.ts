@@ -184,7 +184,8 @@ export class ZTTeamImageController {
       }
       baseWhere = { page_id: p.id };
     } else {
-      baseWhere = {
+      const isAdmin = req.user?.role === 'ADMIN';
+      baseWhere = isAdmin ? {} : {
         OR: [
           {
             page: {

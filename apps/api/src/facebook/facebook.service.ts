@@ -19,6 +19,15 @@ export class ZTTeamFacebookService {
     private readonly storyTestService: ZTTeamStoryTestService,
   ) { }
 
+  private async ztteam_checkIsAdmin(userId: string): Promise<boolean> {
+    if (!userId) return false;
+    const caller = await this.prisma.ztteam_users.findUnique({
+      where: { id: userId },
+      select: { role: true }
+    });
+    return caller?.role === 'ADMIN';
+  }
+
   async ztteam_exchangeLongLivedToken(shortToken: string, userId: string) {
     /** In a real scenario, appId and appSecret should come from DB or .env */
     const appId = process.env.FB_APP_ID || '';
@@ -97,9 +106,10 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_fetchPages(fbAccountId: string, userId: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const fbAccount = await this.prisma.ztteam_fb_accounts.findFirst({
       where: {
-        owner_user_id: userId,
+        ...(isAdmin ? {} : { owner_user_id: userId }),
         OR: [
           { id: fbAccountId },
           { fb_user_id: fbAccountId },
@@ -237,8 +247,8 @@ export class ZTTeamFacebookService {
               data: pageData,
             });
           } 
-          /** Nếu Fanpage thuộc về tài khoản FB khác nhưng CÙNG 1 người dùng Web -> Chuyển giao quyền sở hữu (Nick cũ bị lỗi) */
-          else if (existingPage.fb_account?.owner_user_id === fbAccount.owner_user_id) {
+          /** Nếu Fanpage thuộc về tài khoản FB khác nhưng CÙNG 1 người dùng Web hoặc ADMIN -> Chuyển giao quyền sở hữu (Nick cũ bị lỗi) */
+          else if (existingPage.fb_account?.owner_user_id === fbAccount.owner_user_id || isAdmin) {
             await this.prisma.ztteam_pages.update({
               where: { id: existingPage.id },
               data: {
@@ -260,7 +270,7 @@ export class ZTTeamFacebookService {
         }
       }
 
-      return this.ztteam_getConnectedPages(fbAccount.owner_user_id);
+      return this.ztteam_getConnectedPages(userId);
     } catch (error) {
       this.logger.error('Error fetching Facebook pages', error);
       throw error;
@@ -352,9 +362,10 @@ export class ZTTeamFacebookService {
       }
 
       /** 5. Lưu hoặc cập nhật vào ztteam_fb_accounts */
+      const isAdmin = await this.ztteam_checkIsAdmin(userId);
       let fbAccount = await this.prisma.ztteam_fb_accounts.findFirst({
         where: {
-          owner_user_id: userId,
+          ...(isAdmin ? {} : { owner_user_id: userId }),
           fb_user_id: fbUserId,
           ...(appId ? { app_id: appId } : {})
         }
@@ -409,7 +420,7 @@ export class ZTTeamFacebookService {
               where: { id: existingPage.id },
               data: pageData
             });
-          } else if (existingPage.fb_account?.owner_user_id === userId) {
+          } else if (existingPage.fb_account?.owner_user_id === userId || isAdmin) {
             await this.prisma.ztteam_pages.update({
               where: { id: existingPage.id },
               data: { ...pageData, fb_account_id: fbAccount.id }
@@ -450,8 +461,9 @@ export class ZTTeamFacebookService {
    * ZTTeam: Lấy danh sách Doanh Nghiệp (BM) kèm cấu trúc tài sản (Apps, System Users, Pages)
    */
   async ztteam_getBusinessesWithAssets(userId: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const fbAccounts = await this.prisma.ztteam_fb_accounts.findMany({
-      where: { owner_user_id: userId },
+      where: isAdmin ? {} : { owner_user_id: userId },
       include: {
         pages: {
           select: {
@@ -605,8 +617,9 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_getConnectedPages(userId: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const fbAccounts = await this.prisma.ztteam_fb_accounts.findMany({
-      where: { owner_user_id: userId },
+      where: isAdmin ? {} : { owner_user_id: userId },
       select: { id: true }
     });
 
@@ -616,7 +629,7 @@ export class ZTTeamFacebookService {
 
     /** ZTTeam: Nạp danh mục website WordPress để map sang domain hiển thị trên Card Fanpage */
     const targetSites = await this.prisma.ztteam_target_sites.findMany({
-      where: { owner_user_id: userId },
+      where: isAdmin ? {} : { owner_user_id: userId },
       select: { id: true, wp_url: true }
     });
     const targetSiteMap = new Map<string, string>();
@@ -725,6 +738,7 @@ export class ZTTeamFacebookService {
 
 
   async ztteam_getPageSettings(pageId: string, userId: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const page = await this.prisma.ztteam_pages.findFirst({
       where: {
         OR: [
@@ -739,7 +753,7 @@ export class ZTTeamFacebookService {
       }
     });
 
-    if (!page || page.fb_account.owner_user_id !== userId) {
+    if (!page || (!isAdmin && page.fb_account?.owner_user_id !== userId)) {
       throw new Error('Fanpage không tồn tại hoặc bạn không có quyền');
     }
 
@@ -825,6 +839,7 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_updatePageSettings(pageId: string, userId: string, config: any) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const page = await this.prisma.ztteam_pages.findFirst({
       where: {
         OR: [
@@ -835,7 +850,7 @@ export class ZTTeamFacebookService {
       include: { fb_account: true }
     });
 
-    if (!page || page.fb_account.owner_user_id !== userId) {
+    if (!page || (!isAdmin && page.fb_account?.owner_user_id !== userId)) {
       throw new Error('Fanpage không tồn tại hoặc bạn không có quyền');
     }
 
@@ -972,6 +987,7 @@ export class ZTTeamFacebookService {
       throw new BadRequestException('Vui lòng chọn Website WordPress đích');
     }
 
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     /** Kiểm tra quyền sở hữu các Page (chấp nhận cả Database UUID lẫn Facebook Page ID) */
     const pages = await this.prisma.ztteam_pages.findMany({
       where: {
@@ -979,7 +995,7 @@ export class ZTTeamFacebookService {
           { id: { in: pageIds } },
           { fb_page_id: { in: pageIds } }
         ],
-        fb_account: { owner_user_id: userId }
+        ...(isAdmin ? {} : { fb_account: { owner_user_id: userId } })
       }
     });
 
@@ -1065,13 +1081,14 @@ export class ZTTeamFacebookService {
       throw new BadRequestException('Vui lòng chọn ít nhất 1 Fanpage');
     }
 
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const pages = await this.prisma.ztteam_pages.findMany({
       where: {
         OR: [
           { id: { in: pageIds } },
           { fb_page_id: { in: pageIds } }
         ],
-        fb_account: { owner_user_id: userId }
+        ...(isAdmin ? {} : { fb_account: { owner_user_id: userId } })
       },
       orderBy: { name: 'asc' }
     });
@@ -1205,15 +1222,21 @@ export class ZTTeamFacebookService {
 
 
   async ztteam_testPost(pageId: string, userId: string, message: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const page = await this.prisma.ztteam_pages.findFirst({
-      where: { fb_page_id: pageId },
+      where: {
+        OR: [
+          { fb_page_id: pageId },
+          { id: pageId }
+        ]
+      },
       include: { fb_account: true }
     });
 
     if (!page) {
       throw new Error('Fanpage không tồn tại trong hệ thống');
     }
-    if (page.fb_account.owner_user_id !== userId) {
+    if (!isAdmin && page.fb_account.owner_user_id !== userId) {
       throw new Error('Bạn không có quyền thao tác trên Fanpage này');
     }
 
@@ -1798,6 +1821,7 @@ export class ZTTeamFacebookService {
   async ztteam_deletePage(pageId: string, userId: string) {
     const fs = require('fs');
     const { ztteam_getReelsPath, ztteam_getImagesPath } = require('../common/ztteam_storage.util');
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
 
     /** Kiểm tra page tồn tại và thuộc quyền user (hỗ trợ cả fb_page_id và id) */
     const page = await this.prisma.ztteam_pages.findFirst({
@@ -1814,7 +1838,7 @@ export class ZTTeamFacebookService {
       throw new BadRequestException('Fanpage không tồn tại');
     }
 
-    if (page.fb_account.owner_user_id !== userId) {
+    if (!isAdmin && page.fb_account?.owner_user_id !== userId) {
       throw new BadRequestException('Bạn không có quyền xóa Fanpage này');
     }
 
@@ -1824,9 +1848,7 @@ export class ZTTeamFacebookService {
     const allRemainingPages = await this.prisma.ztteam_pages.findMany({
       where: {
         id: { not: internalPageId },
-        fb_account: {
-          owner_user_id: userId,
-        },
+        ...(isAdmin ? {} : { fb_account: { owner_user_id: userId } }),
       },
       orderBy: { id: 'asc' },
     });
@@ -2114,8 +2136,15 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_togglePageActive(pageId: string, userId: string, isActive: boolean) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const page = await this.prisma.ztteam_pages.findFirst({
-      where: { fb_page_id: pageId, fb_account: { owner_user_id: userId } }
+      where: {
+        OR: [
+          { fb_page_id: pageId },
+          { id: pageId }
+        ],
+        ...(isAdmin ? {} : { fb_account: { owner_user_id: userId } })
+      }
     });
 
     if (!page) {
@@ -2135,10 +2164,11 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_checkAccountHealth(userId: string, accountId?: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     /** 1. Tự động dọn dẹp các bản ghi Nick FB trùng lặp bị rỗng (0 Fanpage) */
     try {
       const allAccounts = await this.prisma.ztteam_fb_accounts.findMany({
-        where: { owner_user_id: userId },
+        where: isAdmin ? {} : { owner_user_id: userId },
         include: { pages: true }
       });
       
@@ -2175,7 +2205,7 @@ export class ZTTeamFacebookService {
       this.logger.warn(`Deduplicate fb accounts failed: ${e.message}`);
     }
 
-    const whereAccount: any = { owner_user_id: userId };
+    const whereAccount: any = isAdmin ? {} : { owner_user_id: userId };
     if (accountId) whereAccount.id = accountId;
 
     const accounts = await this.prisma.ztteam_fb_accounts.findMany({
@@ -2365,8 +2395,9 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_getConnectedAccounts(userId: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const accounts = await this.prisma.ztteam_fb_accounts.findMany({
-      where: { owner_user_id: userId },
+      where: isAdmin ? {} : { owner_user_id: userId },
       include: { pages: true },
       orderBy: { created_at: 'desc' }
     });
@@ -2384,8 +2415,12 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_deleteAccount(accountId: string, userId: string) {
+    const isAdmin = await this.ztteam_checkIsAdmin(userId);
     const acc = await this.prisma.ztteam_fb_accounts.findFirst({
-      where: { id: accountId, owner_user_id: userId }
+      where: {
+        id: accountId,
+        ...(isAdmin ? {} : { owner_user_id: userId })
+      }
     });
 
     if (!acc) {

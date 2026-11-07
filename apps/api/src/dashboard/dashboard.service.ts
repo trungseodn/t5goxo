@@ -37,7 +37,10 @@ export class ZTTeamDashboardService {
     const totalPages = pageIds.length;
 
     /** 2. Get user's target sites and sources */
-    const siteWhere: any = { owner_user_id: userId };
+    const siteWhere: any = {};
+    if (!isAdmin || targetUserId) {
+      siteWhere.owner_user_id = targetUserId || userId;
+    }
     if (siteId) siteWhere.id = siteId;
 
     const targetSites = await this.prisma.ztteam_target_sites.findMany({

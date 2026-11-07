@@ -140,13 +140,15 @@ export class ZTTeamRenderController {
     if (fbPageId) where.page = { ...where.page, fb_page_id: fbPageId };
     if (status) where.status = status;
 
-    /** Lọc dữ liệu theo User đang đăng nhập (chặn Manager xem của Admin) */
-    where.page = {
-      ...where.page,
-      fb_account: {
-        owner_user_id: req.user.sub
-      }
-    };
+    /** Lọc dữ liệu theo User đang đăng nhập (chặn Manager xem của Admin, Admin xem tất cả) */
+    if (req.user?.role !== 'ADMIN') {
+      where.page = {
+        ...where.page,
+        fb_account: {
+          owner_user_id: req.user.sub
+        }
+      };
+    }
 
     const [reels, total] = await Promise.all([
       this.prisma.ztteam_reels.findMany({

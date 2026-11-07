@@ -125,6 +125,20 @@ export class ZTTeamWordpressService {
       await this.ztteam_testConnection(data.wpUrl, data.wpUsername, data.wpAppPassword);
     }
 
+    const caller = await this.prisma.ztteam_users.findUnique({
+      where: { id: userId },
+      select: { role: true }
+    });
+    const isAdmin = caller?.role === 'ADMIN';
+
+    const site = await this.prisma.ztteam_target_sites.findFirst({
+      where: isAdmin ? { id: siteId } : { id: siteId, owner_user_id: userId }
+    });
+
+    if (!site) {
+      throw new HttpException('Website WordPress không tồn tại hoặc bạn không có quyền', HttpStatus.NOT_FOUND);
+    }
+
     const updateData: any = {
       wp_url: data.wpUrl,
       wp_username: data.wpUsername,
@@ -143,15 +157,21 @@ export class ZTTeamWordpressService {
     }
 
     return this.prisma.ztteam_target_sites.update({
-      where: { id: siteId, owner_user_id: userId },
+      where: { id: siteId },
       data: updateData
     });
   }
 
   /** ZTTeam: Bật / Tắt nhanh chế độ Đăng Thủ Công cho Website WordPress đích */
   async ztteam_toggleSiteManual(userId: string, siteId: string, isManual: boolean) {
+    const caller = await this.prisma.ztteam_users.findUnique({
+      where: { id: userId },
+      select: { role: true }
+    });
+    const isAdmin = caller?.role === 'ADMIN';
+
     const site = await this.prisma.ztteam_target_sites.findFirst({
-      where: { id: siteId, owner_user_id: userId }
+      where: isAdmin ? { id: siteId } : { id: siteId, owner_user_id: userId }
     });
 
     if (!site) {
@@ -165,8 +185,14 @@ export class ZTTeamWordpressService {
   }
 
   async ztteam_getTargetSites(userId: string) {
+    const caller = await this.prisma.ztteam_users.findUnique({
+      where: { id: userId },
+      select: { role: true }
+    });
+    const isAdmin = caller?.role === 'ADMIN';
+
     return this.prisma.ztteam_target_sites.findMany({
-      where: { owner_user_id: userId },
+      where: isAdmin ? {} : { owner_user_id: userId },
       select: {
         id: true,
         wp_url: true,
@@ -183,8 +209,14 @@ export class ZTTeamWordpressService {
   }
 
   async ztteam_deleteTargetSite(userId: string, siteId: string) {
+    const caller = await this.prisma.ztteam_users.findUnique({
+      where: { id: userId },
+      select: { role: true }
+    });
+    const isAdmin = caller?.role === 'ADMIN';
+
     return this.prisma.ztteam_target_sites.deleteMany({
-      where: { id: siteId, owner_user_id: userId }
+      where: isAdmin ? { id: siteId } : { id: siteId, owner_user_id: userId }
     });
   }
 
