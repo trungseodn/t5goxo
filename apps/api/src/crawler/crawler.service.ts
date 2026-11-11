@@ -24,10 +24,10 @@ export class ZTTeamCrawlerService {
   /**
    * Complete automated story processing pipeline:
    * 1. Crawl clean story content via Smart Proxy (bypasses Cloudflare / geo-block)
-   * 2. AI generates dramatic scene prompt & renders 2K image via SangTao.ai
+   * 2. Process high-quality 2K image (Original featured image / AI generation)
    * 3. Post full story + 2K image (as Featured Image) to WordPress target site
    * 4. Prepare Fanpage post resource:
-   *    - Attached image: 2K SangTao.ai image
+   *    - Attached image: 2K featured image
    *    - Content: TITLE VIẾT HOA + Part 1 / Hook kịch tính
    *    - First comment: Link đọc full câu chuyện trên website đích (tuỳ chọn)
    */
@@ -89,10 +89,10 @@ export class ZTTeamCrawlerService {
       }
     }
 
-    /** 2. Xử lý ảnh 2K: Tái sử dụng ảnh đã có hoặc chỉ tạo mới khi chưa có / khi người dùng yêu cầu render lại */
+    /** 2. Xử lý ảnh 2K: Ưu tiên ảnh gốc chất lượng cao từ nguồn cào hoặc tạo mới */
     let image2kUrl = existingImageUrl || '';
     let imageLocalPath = '';
-    let currentTemplateId = 'sangtao_2k';
+    let currentTemplateId = 'source_original';
 
     if (!image2kUrl && !forceRecreate) {
       /** Kiểm tra nếu bài viết này đã từng tạo ảnh trong hệ thống trước đó */
@@ -105,39 +105,38 @@ export class ZTTeamCrawlerService {
       });
       if (existingImgRecord && existingImgRecord.image_url) {
         image2kUrl = existingImgRecord.image_url;
-        currentTemplateId = existingImgRecord.template_id || 'sangtao_2k';
+        currentTemplateId = existingImgRecord.template_id || 'source_original';
       }
     }
 
     if (!image2kUrl || forceRecreate) {
-      /** Chỉ khi chưa có ảnh sẵn hoặc người dùng bấm render lại thủ công mới gọi SangTao.ai */
-      try {
-        this.logger.log(`Analyzing story and generating 2K image via SangTao.ai for "${storyTitle}"...`);
-        const promptData = await this.storyTestService.ztteam_generateStoryImagePrompt(
-          cleanContent,
-          'cinematic',
-          '4:5',
-        );
+      if (sourceBackupImageUrl && sourceBackupLocalPath && fs.existsSync(sourceBackupLocalPath)) {
+        image2kUrl = sourceBackupImageUrl;
+        imageLocalPath = sourceBackupLocalPath;
+        currentTemplateId = 'source_original';
+        this.logger.log(`Sử dụng ảnh gốc chất lượng cao từ nguồn cào: ${image2kUrl}`);
+      } else {
+        /** Nếu không có sẵn ảnh gốc, thử tạo ảnh bằng AI */
+        try {
+          this.logger.log(`Analyzing story and generating 2K image via AI for "${storyTitle}"...`);
+          const promptData = await this.storyTestService.ztteam_generateStoryImagePrompt(
+            cleanContent,
+            'cinematic',
+            '4:5',
+          );
 
-        const imageResult = await this.storyTestService.ztteam_renderStoryImage({
-          prompt: promptData.image_prompt_en,
-          aspectRatio: '4:5',
-        });
+          const imageResult = await this.storyTestService.ztteam_renderStoryImage({
+            prompt: promptData.image_prompt_en,
+            aspectRatio: '4:5',
+          });
 
-        image2kUrl = imageResult.imageUrl;
-        imageLocalPath = imageResult.localPath;
-        currentTemplateId = 'sangtao_2k';
-        this.logger.log(`SangTao.ai 2K image generated: ${image2kUrl}`);
-      } catch (sangTaoErr: any) {
-        this.logger.warn(`SangTao.ai gặp sự cố (${sangTaoErr.message}). Tự động kích hoạt Fallback sang ảnh gốc dự phòng!`);
-        if (sourceBackupImageUrl && sourceBackupLocalPath && fs.existsSync(sourceBackupLocalPath)) {
-          image2kUrl = sourceBackupImageUrl;
-          imageLocalPath = sourceBackupLocalPath;
-          currentTemplateId = 'source_original';
-          this.logger.log(`Đã kích hoạt thành công ảnh gốc dự phòng: ${image2kUrl}`);
-        } else {
-          /** ZTTeam: Nếu không có cả ảnh gốc lẫn ảnh AI -> Bỏ qua bài viết, không đủ điều kiện */
-          throw new Error(`[KHÔNG ĐỦ ĐIỀU KIỆN] Bài viết không có ảnh gốc dự phòng và SangTao.ai không thể tạo ảnh (${sangTaoErr.message})`);
+          image2kUrl = imageResult.imageUrl;
+          imageLocalPath = imageResult.localPath;
+          currentTemplateId = 'ai_generated';
+          this.logger.log(`AI 2K image generated: ${image2kUrl}`);
+        } catch (aiErr: any) {
+          this.logger.warn(`Lỗi tạo ảnh AI (${aiErr.message})`);
+          throw new Error(`[KHÔNG ĐỦ ĐIỀU KIỆN] Bài viết không có ảnh gốc dự phòng và AI không thể tạo ảnh (${aiErr.message})`);
         }
       }
     } else {
