@@ -68,6 +68,17 @@ export class ZTTeamCrawlerService {
     const cleanContent = this.fetcherService.ztteam_cleanStoryContent(storyData.content);
     const storyTitle = storyData.title.trim();
 
+    /** 1.0 Kiểm tra giới hạn 5 ngày đối với website Tin tức (imsb.info, mv.imsb.info) */
+    const targetSite = await this.prisma.ztteam_target_sites.findUnique({ where: { id: targetSiteId } });
+    const isNewsSite = /imsb\.info|mv\.imsb\.info/i.test(targetSite?.wp_url || '') || /imsb\.info|mv\.imsb\.info/i.test(sourceUrl);
+    if (isNewsSite && storyData.publishedTime) {
+      const pubDate = new Date(storyData.publishedTime);
+      const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+      if (!isNaN(pubDate.getTime()) && (Date.now() - pubDate.getTime() > FIVE_DAYS_MS)) {
+        throw new HttpException(`[QUÁ HẠN 5 NGÀY] Bài viết tin tức xuất bản hơn 5 ngày (${pubDate.toISOString().split('T')[0]})`, HttpStatus.BAD_REQUEST);
+      }
+    }
+
     /** ZTTeam Gatekeeper: Kiểm duyệt chất lượng tiêu đề và nội dung */
     const validation = this.fetcherService.ztteam_validateStoryArticle(storyTitle, cleanContent);
     if (!validation.isValid) {
@@ -510,12 +521,13 @@ export class ZTTeamCrawlerService {
     };
   }
 
-  async ztteam_createSource(siteId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean }) {
+  async ztteam_createSource(siteId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean; maxScanPages?: number }) {
     try {
       const extractRules = {
         addLinkToComment: data.addLinkToComment !== undefined ? data.addLinkToComment : true,
         batchSize: data.batchSize ? Math.max(1, Math.min(10, Number(data.batchSize))) : 1,
         keepContentImages: Boolean(data.keepContentImages),
+        maxScanPages: data.maxScanPages ? Math.max(1, Math.min(500, Number(data.maxScanPages))) : 50,
       };
       return await this.prisma.ztteam_crawl_sources.create({
         data: {
@@ -533,7 +545,7 @@ export class ZTTeamCrawlerService {
     }
   }
 
-  async ztteam_updateSource(sourceId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean }) {
+  async ztteam_updateSource(sourceId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean; maxScanPages?: number }) {
     const existing = await this.prisma.ztteam_crawl_sources.findUnique({ where: { id: sourceId } });
     let extractRules: any = {};
     try {
@@ -551,6 +563,9 @@ export class ZTTeamCrawlerService {
     }
     if (data.keepContentImages !== undefined) {
       extractRules.keepContentImages = Boolean(data.keepContentImages);
+    }
+    if (data.maxScanPages !== undefined) {
+      extractRules.maxScanPages = Math.max(1, Math.min(500, Number(data.maxScanPages)));
     }
 
     return this.prisma.ztteam_crawl_sources.update({

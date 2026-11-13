@@ -213,8 +213,22 @@ export class ZTTeamFacebookController {
       coverUrl?: string;
       avatarLocalPath?: string;
       coverLocalPath?: string;
+      description?: string;
     }
   ) {
     return this.facebookService.ztteam_applyPageBranding(pageId, body);
+  }
+
+  @Post('pages/:pageId/description/generate')
+  ztteam_generateDescription(@Param('pageId') pageId: string) {
+    return this.facebookService.ztteam_generatePageDescription(pageId);
+  }
+
+  @Post('pages/:pageId/description/update')
+  ztteam_updateDescription(
+    @Param('pageId') pageId: string,
+    @Body('description') description: string
+  ) {
+    return this.facebookService.ztteam_updatePageDescription(pageId, description);
   }
 }

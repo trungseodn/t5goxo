@@ -16,6 +16,7 @@ export interface ZTTeamFetchResult {
   excerpt: string;
   siteName: string | null;
   url: string;
+  publishedTime?: string | null;
 }
 
 @Injectable()
@@ -290,7 +291,130 @@ export class ZTTeamFetcherService {
       return { isValid: false, reason: `Nội dung không đủ câu hoàn chỉnh (${sentenceCount} câu < 2)` };
     }
 
+    /** 4. ZTTeam Story Classifier: Phân loại Story vs. Tin tức thời sự (News rejection) */
+    const storyCheck = this.ztteam_isStoryArticle(trimmedTitle, trimmedContent);
+    if (!storyCheck.isStory) {
+      return { isValid: false, reason: `[KHÔNG PHẢI STORY] ${storyCheck.reason}` };
+    }
+
     return { isValid: true };
+  }
+
+  /**
+   * ZTTeam: Bộ lọc thông minh phân biệt câu chuyện đời sống/gia đình (Story) và tin tức thời sự/kinh tế/công nghệ/thể thao (News).
+   * Tự động loại bỏ các bài viết dạng báo chí thời sự khi auto leech từ các website đa chủ đề.
+   */
+  ztteam_isStoryArticle(title: string, content: string): { isStory: boolean; reason?: string } {
+    const titleLower = (title || '').toLowerCase();
+    const contentLower = (content || '').toLowerCase();
+    const combinedText = `${titleLower} ${contentLower}`;
+
+    /** 1. Mẫu nhận diện TIN TỨC CHÍNH TRỊ / CHIẾN TRANH / PHÁP LUẬT THỜI SỰ */
+    const politicsMilitaryPatterns = [
+      /\b(president|prime minister|white house|pentagon|congress|senate|senator|parliament|election|democrat|republican|geopolitics|geopolitical|chính phủ|thủ tướng|tổng thống|bầu cử)\b/,
+      /\b(missile attack|airstrike|drone strike|military operation|ceasefire agreement|troops deployed|pentagon confirms|battlefield|nato summit|armed conflict|sanctions against|quân sự|không kích|tên lửa|chiến sự)\b/,
+      /\b(police department reported|suspect arrested|sheriff's office|highway closed after crash|investigators said|indicted on charges|công an điều tra|bắt giữ nghi phạm)\b/,
+    ];
+
+    /** 2. Mẫu nhận diện TÀI CHÍNH / CHỨNG KHOÁN / TIỀN ẢO / KINH DOANH THỜI SỰ */
+    const financePatterns = [
+      /\b(wall street|nasdaq|s&p 500|dow jones|quarterly earnings|q[1-4] earnings|interest rate hike|inflation rate|federal reserve|cryptocurrency market|bitcoin price|ethereum price|ipo filing|treasury yields|stock fell|shares dropped|shares surged|market cap|lãi suất fed|chứng khoán)\b/,
+    ];
+
+    /** 3. Mẫu nhận diện CÔNG NGHỆ / THIẾT BỊ / ĐÁNH GIÁ PHẦN CỨNG */
+    const techPatterns = [
+      /\b(hands-on review|specs and benchmark|snapdragon|nvidia rtx|amd ryzen|intel core|display refresh rate|ios \d+(\.\d+)?|android security patch|camera sensor specs|unboxing review|geekbench|bản cập nhật phần mềm)\b/,
+    ];
+
+    /** 4. Mẫu nhận diện THỂ THAO TRẬN ĐẤU / BẢN TIN TỶ SỐ */
+    const sportsPatterns = [
+      /\bvs\.?\b.*\b(highlights|full match|live score|championship|premier league|nba playoffs|quarterfinal|semifinal|scored a goal|penalty shootout|trực tiếp bóng đá)\b/,
+      /\b(premier league table|uefa champions league|transfer window|head coach sacked|bảng xếp hạng ngoại hạng)\b/,
+    ];
+
+    /** 5. Từ khóa đặc trưng CÂU CHUYỆN ĐỜI SỐNG / GIA ĐÌNH / TÂM LÝ TÌNH CẢM (Story Markers) */
+    const storyKeywords = [
+      'husband', 'wife', 'mother', 'father', 'mom', 'dad', 'mother-in-law', 'father-in-law',
+      'brother-in-law', 'sister-in-law', 'daughter', 'son', 'sister', 'brother', 'fiancé',
+      'fiancée', 'ex-husband', 'ex-wife', 'boyfriend', 'girlfriend', 'in-laws', 'grandma',
+      'grandpa', 'roommate', 'best friend', 'family', 'parents', 'granddaughter', 'grandson',
+      'aunt', 'uncle', 'cousin', 'niece', 'nephew', 'stepmother', 'stepfather', 'stepson',
+      'stepdaughter', 'bride', 'groom', 'wedding', 'divorce', 'marriage', 'married',
+      'cheating', 'affair', 'secret', 'inheritance', 'will', 'dna test', 'confession',
+      'pregnant', 'pregnancy', 'custody', 'betrayal', 'forgave', 'kicked out', 'walked out',
+      'tears', 'crying', 'heartbroken', 'shocked', 'whispered', 'apologized', 'loved', 'felt',
+      'chồng', 'vợ', 'mẹ chồng', 'bố mẹ', 'ly hôn', 'kết hôn', 'ngoại tình', 'thừa kế', 'con gái', 'con trai', 'tâm sự'
+    ];
+
+    /** 6. Dấu hiệu đại từ xưng hô tự sự góc nhìn ngôi thứ nhất (First-person pronouns) */
+    const pronounMatches = content.match(/\b(i|my|me|myself|we|our|us|tôi|mình)\b/gi) || [];
+    const pronounCount = pronounMatches.length;
+
+    /** Tính điểm Story */
+    let storyScore = 0;
+    for (const kw of storyKeywords) {
+      if (combinedText.includes(kw)) {
+        storyScore++;
+      }
+    }
+
+    /** Kiểm tra vi phạm các danh mục Tin tức */
+    const newsViolations: string[] = [];
+    for (const pat of politicsMilitaryPatterns) {
+      if (pat.test(combinedText)) {
+        newsViolations.push('Chính trị / Chiến sự / Pháp luật hình sự');
+        break;
+      }
+    }
+    for (const pat of financePatterns) {
+      if (pat.test(combinedText)) {
+        newsViolations.push('Tài chính / Chứng khoán / Tiền số');
+        break;
+      }
+    }
+    for (const pat of techPatterns) {
+      if (pat.test(combinedText)) {
+        newsViolations.push('Đánh giá công nghệ / Thông số kỹ thuật');
+        break;
+      }
+    }
+    for (const pat of sportsPatterns) {
+      if (pat.test(combinedText)) {
+        newsViolations.push('Bản tin thể thao / Trận đấu');
+        break;
+      }
+    }
+
+    /** Tiêu đề có mẫu tin tức đặc thù */
+    const isObviousNewsTitle =
+      /^(breaking|watch|update|live updates|video|report|bản tin|nóng):/i.test(titleLower) ||
+      /\bvs\.?\b/i.test(titleLower) ||
+      /\b(stock market|nasdaq|crypto|inflation|gdp)\b/i.test(titleLower);
+
+    if (newsViolations.length > 0) {
+      if (storyScore < 3 || pronounCount < 5 || isObviousNewsTitle) {
+        return {
+          isStory: false,
+          reason: `Bài viết thuộc thể loại Tin tức (${newsViolations.join(', ')}), không phải câu chuyện đời sống/gia đình.`
+        };
+      }
+    }
+
+    if (isObviousNewsTitle && storyScore < 2) {
+      return {
+        isStory: false,
+        reason: 'Tiêu đề có cấu trúc bản tin thời sự hoặc thể thao đối đầu.'
+      };
+    }
+
+    if (storyScore === 0 && pronounCount < 3) {
+      return {
+        isStory: false,
+        reason: 'Nội dung thiếu yếu tố tự sự và không chứa quan hệ nhân vật/câu chuyện đời sống.'
+      };
+    }
+
+    return { isStory: true };
   }
 
 
@@ -353,6 +477,7 @@ export class ZTTeamFetcherService {
     let featuredImage: string | null = null;
     const images: string[] = [];
 
+    let publishedTime: string | null = null;
     try {
       const json = JSON.parse(rawBody);
       const data = json?.data || json;
@@ -360,6 +485,7 @@ export class ZTTeamFetcherService {
         title = data.title || '';
         text = data.content || rawBody;
         const meta = data.metadata || {};
+        publishedTime = meta['article:published_time'] || meta['og:published_time'] || meta['publishDate'] || meta['date'] || null;
         featuredImage = meta['og:image'] || meta['twitter:image'] || data.image || null;
         if (featuredImage) {
           images.push(featuredImage);
@@ -373,6 +499,13 @@ export class ZTTeamFetcherService {
           title = line.replace('Title:', '').trim();
           break;
         }
+      }
+    }
+
+    if (!publishedTime) {
+      const urlDateMatch = url.match(/\b(202\d)[\/\-_](0[1-9]|1[0-2])[\/\-_](0[1-9]|[12]\d|3[01])\b/);
+      if (urlDateMatch) {
+        publishedTime = `${urlDateMatch[1]}-${urlDateMatch[2]}-${urlDateMatch[3]}`;
       }
     }
 
@@ -411,6 +544,7 @@ export class ZTTeamFetcherService {
       excerpt: cleanContent.substring(0, 200),
       siteName: this.ztteam_extractDomain(url),
       url,
+      publishedTime,
     };
   }
 
@@ -617,6 +751,23 @@ export class ZTTeamFetcherService {
 
       const image = this.ztteam_extractOgImage($);
       const siteName = this.ztteam_extractSiteName($);
+
+      /** Trích xuất ngày đăng bài viết */
+      let publishedTime: string | null = 
+        $('meta[property="article:published_time"]').attr('content') ||
+        $('meta[property="og:published_time"]').attr('content') ||
+        $('meta[name="publish-date"]').attr('content') ||
+        $('meta[name="pubdate"]').attr('content') ||
+        $('time[datetime]').attr('datetime') ||
+        $('meta[name="date"]').attr('content') ||
+        null;
+
+      if (!publishedTime) {
+        const urlDateMatch = url.match(/\b(202\d)[\/\-_](0[1-9]|1[0-2])[\/\-_](0[1-9]|[12]\d|3[01])\b/);
+        if (urlDateMatch) {
+          publishedTime = `${urlDateMatch[1]}-${urlDateMatch[2]}-${urlDateMatch[3]}`;
+        }
+      }
       let { title, content, contentHtml, excerpt } = this.ztteam_parseReadability(
         html,
         url,
@@ -674,6 +825,7 @@ export class ZTTeamFetcherService {
         excerpt,
         siteName: siteName || this.ztteam_extractDomain(url),
         url,
+        publishedTime,
       };
     } catch (directErr: any) {
       /** Nếu lỗi xuất phát từ việc vi phạm tiêu chuẩn bài viết (trang chuyên mục/rác), ném lỗi luôn, không gọi proxy */

@@ -76,6 +76,7 @@ model ztteam_pages {
   branding_cover_url        String?
   branding_avatar_prompt    String?  @db.Text
   branding_cover_prompt     String?  @db.Text
+  branding_description      String?  @db.Text
   
   /** Tab 1 & 2 */
   tags                           String[] @default([])

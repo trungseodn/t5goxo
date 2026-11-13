@@ -227,11 +227,22 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
   private async ztteam_crawlSource(source: any) {
     /** 1. Quét phân trang động linh hoạt (Dynamic Flexible Pagination) */
     const urlsToFetch: string[] = [];
-    const maxScanPages = 10; /** Quét tối đa 10 trang lưu trữ */
+    let maxScanPages = 50; /** Mặc định quét sâu 50 trang, tối đa 500 trang theo cấu hình nguồn */
+    try {
+      const rules = JSON.parse(source.extract_rules_json || '{}');
+      if (rules.maxScanPages && Number(rules.maxScanPages) > 0) {
+        maxScanPages = Math.max(1, Math.min(500, parseInt(rules.maxScanPages, 10)));
+      }
+    } catch (e) {}
+
+    const targetWpUrl = source.target_site?.wp_url || '';
+    const sourceUrl = source.source_url || '';
+    const isNewsSite = /imsb\.info|mv\.imsb\.info/i.test(targetWpUrl) || /imsb\.info|mv\.imsb\.info/i.test(sourceUrl);
+    const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
 
     for (let p = 1; p <= maxScanPages; p++) {
       const pageUrl = this.ztteam_generatePageUrl(source.source_url, p);
-      this.logger.log(`[Trang ${p}] Đang quét link bài viết từ nguồn: ${pageUrl}`);
+      this.logger.log(`[Trang ${p}/${maxScanPages}] Đang quét link bài viết từ nguồn: ${pageUrl}`);
 
       const pageArticles = await this.ztteam_extractArticleLinksFromPage(pageUrl, source, p);
 
@@ -241,9 +252,34 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         break;
       }
 
+      /** Kiểm tra riêng site News: nếu permalink có chứa ngày cũ hơn 5 ngày */
+      let allArticlesOnPageTooOld = isNewsSite;
+
       /** Kiểm tra lịch sử xem bài nào trên trang này CHƯA được cào */
       const unCrawledOnThisPage: string[] = [];
       for (const url of pageArticles) {
+        if (isNewsSite) {
+          const urlDateMatch = url.match(/\b(202\d)[\/\-_](0[1-9]|1[0-2])[\/\-_](0[1-9]|[12]\d|3[01])\b/);
+          if (urlDateMatch) {
+            const articleDate = new Date(`${urlDateMatch[1]}-${urlDateMatch[2]}-${urlDateMatch[3]}`);
+            if (!isNaN(articleDate.getTime()) && (Date.now() - articleDate.getTime() > FIVE_DAYS_MS)) {
+              /** Đánh dấu bỏ qua trong history để không quét lại */
+              try {
+                await this.prisma.ztteam_crawl_history.upsert({
+                  where: { source_id_url: { source_id: source.id, url } },
+                  create: { source_id: source.id, url, status: 'SKIPPED_TOO_OLD' },
+                  update: { status: 'SKIPPED_TOO_OLD' }
+                });
+              } catch (e) {}
+              continue;
+            } else {
+              allArticlesOnPageTooOld = false;
+            }
+          } else {
+            allArticlesOnPageTooOld = false;
+          }
+        }
+
         const history = await this.prisma.ztteam_crawl_history.findUnique({
           where: { source_id_url: { source_id: source.id, url } }
         });
@@ -257,6 +293,12 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         if (!isAlreadyProcessed) {
           unCrawledOnThisPage.push(url);
         }
+      }
+
+      /** Nếu là site News và 100% bài trên trang này đều đã cũ hơn 5 ngày, dừng quét sâu các trang sau */
+      if (isNewsSite && allArticlesOnPageTooOld && pageArticles.length > 0) {
+        this.logger.log(`[Trang ${p}] Tất cả bài viết trên trang của News site (${source.source_url}) đều đã cũ hơn 5 ngày. Dừng quét sâu các trang tiếp theo.`);
+        break;
       }
 
       if (unCrawledOnThisPage.length > 0) {
@@ -347,17 +389,21 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         attemptCount++;
       } catch (err: any) {
         /** ZTTeam: Kiểm tra nếu lỗi do vi phạm cổng kiểm duyệt bài viết hoặc bài viết không đủ điều kiện ảnh/nội dung */
-        const isConditionUnmet = err.message?.includes('Không phải bài viết hợp lệ') ||
+        const isNotStory = err.message?.includes('[KHÔNG PHẢI STORY]');
+        const isTooOld = err.message?.includes('[QUÁ HẠN 5 NGÀY]');
+        const isConditionUnmet = isNotStory || isTooOld ||
+                                 err.message?.includes('Không phải bài viết hợp lệ') ||
                                  err.message?.includes('Nội dung không đạt tiêu chuẩn bài viết') ||
                                  err.message?.includes('[KHÔNG ĐỦ ĐIỀU KIỆN]');
 
         if (isConditionUnmet) {
-          this.logger.log(`[TỰ ĐỘNG BỎ QUA] URL không đáp ứng điều kiện: ${url} (${err.message})`);
+          const skipStatus = isNotStory ? 'SKIPPED_NOT_STORY' : (isTooOld ? 'SKIPPED_TOO_OLD' : 'SKIPPED_NOT_ARTICLE');
+          this.logger.log(`[TỰ ĐỘNG BỎ QUA] URL không đáp ứng điều kiện (${skipStatus}): ${url} (${err.message})`);
           try {
             await this.prisma.ztteam_crawl_history.upsert({
               where: { source_id_url: { source_id: source.id, url } },
-              create: { source_id: source.id, url, status: 'SKIPPED_NOT_ARTICLE' },
-              update: { status: 'SKIPPED_NOT_ARTICLE' }
+              create: { source_id: source.id, url, status: skipStatus },
+              update: { status: skipStatus }
             });
           } catch (e) {}
           continue; /** Chuyển sang URL tiếp theo, không gửi cảnh báo lỗi Telegram */

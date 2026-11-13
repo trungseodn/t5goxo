@@ -91,6 +91,9 @@ export default function FacebookPageSettings() {
   const [isUploadingCover, setIsUploadingCover] = useState(false);
   const [pageCategory, setPageCategory] = useState<string>('');
   const [isSavingCategory, setIsSavingCategory] = useState(false);
+  const [pageDescription, setPageDescription] = useState<string>('');
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  const [isUpdatingDescription, setIsUpdatingDescription] = useState(false);
   const [brandingData, setBrandingData] = useState<{
     avatarUrl?: string;
     avatarLocalPath?: string;
@@ -98,6 +101,7 @@ export default function FacebookPageSettings() {
     coverUrl?: string;
     coverLocalPath?: string;
     coverPrompt?: string;
+    description?: string;
   } | null>(null);
 
   /** Filter items for Queue and History tabs */
@@ -300,15 +304,19 @@ export default function FacebookPageSettings() {
       setSources(data.sources || []);
       setPageCategory(data.category || '');
 
-      /** ZTTeam: Nạp dữ liệu nhận diện Avatar & Cover đã lưu trong Database để F5 không bị mất */
-      if (data.branding && (data.branding.avatarUrl || data.branding.coverUrl)) {
+      /** ZTTeam: Nạp dữ liệu nhận diện Avatar, Cover & Mô tả đã lưu trong Database để F5 không bị mất */
+      if (data.branding) {
         setBrandingData(data.branding);
+        if (data.branding.description) {
+          setPageDescription(data.branding.description);
+        }
       } else if (data.avatar || data.cover_url) {
         setBrandingData({
           avatarUrl: data.avatar || null,
           coverUrl: data.cover_url || null,
           avatarPrompt: null,
           coverPrompt: null,
+          description: null,
         });
       }
 
@@ -571,21 +579,71 @@ export default function FacebookPageSettings() {
     }
   };
 
-  /** ZTTeam: Tạo bộ nhận diện AI cho Fanpage (Avatar 1:1 + Cover 16:9) */
+  /** ZTTeam: Tạo bộ nhận diện AI cho Fanpage (Avatar 1:1 + Cover 16:9 + Mô tả) */
   const ztteam_handleGenerateBranding = async () => {
     if (!id) return;
     setIsGeneratingBranding(true);
     try {
-      ztteam_showToast('Đang phân tích chủ đề và sinh ảnh nhận diện qua Google Gemini AI, vui lòng đợi 15-30 giây...', 'info');
+      ztteam_showToast('Đang phân tích chủ đề và sinh ảnh nhận diện kèm mô tả qua Google Gemini AI, vui lòng đợi 15-30 giây...', 'info');
       const res = await api.post(`/facebook/pages/${id}/branding/generate`);
       if (res.data?.success) {
         setBrandingData(res.data);
-        ztteam_showToast('Đã tạo thành công bộ nhận diện Avatar và Ảnh bìa qua Gemini! Hãy kiểm tra bản xem trước.', 'success');
+        if (res.data.description) {
+          setPageDescription(res.data.description);
+        }
+        ztteam_showToast('Đã tạo thành công bộ nhận diện Avatar, Ảnh bìa & Mô tả qua Gemini! Hãy kiểm tra bản xem trước.', 'success');
       }
     } catch (err: any) {
       ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi khi tạo bộ nhận diện AI', 'error');
     } finally {
       setIsGeneratingBranding(false);
+    }
+  };
+
+  /** ZTTeam: Tạo riêng Mô tả Fanpage bằng AI */
+  const ztteam_handleGenerateDescription = async () => {
+    if (!id) return;
+    setIsGeneratingDescription(true);
+    try {
+      ztteam_showToast('Đang tạo mô tả Fanpage bằng Google Gemini AI...', 'info');
+      const res = await api.post(`/facebook/pages/${id}/description/generate`);
+      if (res.data?.success && res.data.description) {
+        setPageDescription(res.data.description);
+        setBrandingData((prev: any) => ({
+          ...prev,
+          description: res.data.description,
+        }));
+        ztteam_showToast('Đã tạo xong mô tả Fanpage bằng Gemini AI!', 'success');
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi khi tạo mô tả AI', 'error');
+    } finally {
+      setIsGeneratingDescription(false);
+    }
+  };
+
+  /** ZTTeam: Cập nhật riêng Mô tả Fanpage lên Facebook */
+  const ztteam_handleUpdateDescription = async () => {
+    if (!id || !pageDescription.trim()) {
+      ztteam_showToast('Vui lòng nhập mô tả Fanpage trước khi cập nhật', 'error');
+      return;
+    }
+    setIsUpdatingDescription(true);
+    try {
+      const res = await api.post(`/facebook/pages/${id}/description/update`, {
+        description: pageDescription.trim()
+      });
+      if (res.data?.success) {
+        ztteam_showToast(res.data.message || 'Cập nhật mô tả lên Fanpage Facebook thành công!', 'success');
+        setBrandingData((prev: any) => ({
+          ...prev,
+          description: pageDescription.trim(),
+        }));
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi cập nhật mô tả Facebook', 'error');
+    } finally {
+      setIsUpdatingDescription(false);
     }
   };
 
@@ -621,12 +679,12 @@ export default function FacebookPageSettings() {
     }
   };
 
-  /** ZTTeam: Gắn Avatar và Cover lên Facebook qua Graph API */
+  /** ZTTeam: Gắn Avatar, Cover & Mô tả lên Facebook qua Graph API */
   const ztteam_handleApplyBranding = async () => {
     if (!id || !brandingData) return;
     const confirmed = await ztteam_showConfirm(
       'Xác nhận gắn bộ nhận diện lên Facebook',
-      `Hệ thống sẽ cập nhật trực tiếp Avatar và Ảnh bìa mới lên Fanpage "${pageName}". Quá trình này sẽ sử dụng cờ ẩn để không làm spam bảng tin. Bạn có chắc chắn muốn áp dụng?`
+      `Hệ thống sẽ cập nhật trực tiếp Avatar, Ảnh bìa và Mô tả mới lên Fanpage "${pageName}". Quá trình này sẽ sử dụng cờ ẩn để không làm spam bảng tin. Bạn có chắc chắn muốn áp dụng?`
     );
     if (!confirmed) return;
 
@@ -637,9 +695,10 @@ export default function FacebookPageSettings() {
         avatarLocalPath: brandingData.avatarLocalPath,
         coverUrl: brandingData.coverUrl,
         coverLocalPath: brandingData.coverLocalPath,
+        description: pageDescription ? pageDescription.trim() : undefined,
       });
       if (res.data?.success) {
-        ztteam_showToast(res.data.message || 'Đã cập nhật Avatar & Ảnh bìa lên Fanpage Facebook thành công!', 'success');
+        ztteam_showToast(res.data.message || 'Đã cập nhật bộ nhận diện lên Fanpage Facebook thành công!', 'success');
         if (res.data.newAvatarUrl) {
           setPageAvatar(res.data.newAvatarUrl);
         }
@@ -647,6 +706,7 @@ export default function FacebookPageSettings() {
           ...prev,
           avatarUrl: res.data.newAvatarUrl || prev?.avatarUrl,
           coverUrl: res.data.newCoverUrl || prev?.coverUrl,
+          description: pageDescription ? pageDescription.trim() : prev?.description,
         }));
       }
     } catch (err: any) {
@@ -1780,7 +1840,7 @@ export default function FacebookPageSettings() {
                   </span>
                 </div>
                 <p className="text-xs text-fb-text-muted mt-1 max-w-2xl leading-relaxed">
-                  Tự động dựa vào Hạng mục ({pageCategory || 'mặc định'}), nguồn website và 3 bài viết gần nhất để Gemini tạo Avatar (1:1) và Ảnh bìa (16:9). Bạn cũng có thể tải ảnh thủ công từ máy tính lên.
+                  Tự động dựa vào Hạng mục ({pageCategory || 'mặc định'}), nguồn website và các bài viết để Gemini tạo Avatar (1:1), Ảnh bìa (16:9) và Mô tả Fanpage. Bạn cũng có thể tải ảnh thủ công hoặc chỉnh sửa mô tả tùy thích.
                 </p>
               </div>
             </div>
@@ -1799,10 +1859,79 @@ export default function FacebookPageSettings() {
                 ) : (
                   <>
                     <span className="material-symbols-outlined text-[20px]">palette</span>
-                    <span>{brandingData ? 'Tạo Lại Cả Bộ Nhận Diện (Gemini)' : 'Tạo Lại Cả Bộ Nhận Diện (Gemini)'}</span>
+                    <span>{brandingData ? 'Tạo Lại Cả Bộ Nhận Diện (Gemini)' : 'Tạo Bộ Nhận Diện & Mô Tả (Gemini)'}</span>
                   </>
                 )}
               </button>
+            </div>
+          </div>
+
+          {/** Card Mô Tả Fanpage (Bio / About) */}
+          <div className="bg-fb-surface rounded-2xl shadow-xl border border-fb-surface-hover/50 p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-fb-surface-hover/50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-xl">description</span>
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-fb-text">Mô Tả Fanpage (Bio / Giới Thiệu)</h4>
+                  <p className="text-[11px] text-fb-text-muted">Cập nhật trực tiếp vào mục Giới thiệu (Bio / About) của Fanpage Facebook thật qua Meta Graph API</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={ztteam_handleGenerateDescription}
+                  disabled={isGeneratingDescription || isUpdatingDescription}
+                  className="px-3.5 py-2 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 border border-cyan-500/30 font-bold rounded-xl text-xs flex items-center gap-1.5 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  {isGeneratingDescription ? (
+                    <>
+                      <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                      <span>Gemini Đang Viết...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-sm">auto_awesome</span>
+                      <span>Tạo Mô Tả Bằng AI</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={ztteam_handleUpdateDescription}
+                  disabled={isUpdatingDescription || isGeneratingDescription || !pageDescription.trim()}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs shadow-md shadow-blue-600/20 flex items-center gap-1.5 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  {isUpdatingDescription ? (
+                    <>
+                      <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                      <span>Đang Cập Nhật...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-sm">publish</span>
+                      <span>Cập Nhật Mô Tả Lên Facebook</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <textarea
+                value={pageDescription}
+                onChange={(e) => setPageDescription(e.target.value)}
+                placeholder="Nhập mô tả Fanpage hoặc bấm 'Tạo Mô Tả Bằng AI' để Google Gemini tự tạo lời giới thiệu lôi cuốn, chuyên nghiệp..."
+                rows={3}
+                className="w-full p-3.5 rounded-xl bg-fb-surface-hover/70 border border-fb-surface-hover text-fb-text text-xs placeholder:text-fb-text-muted/60 focus:outline-none focus:ring-2 focus:ring-fb-blue"
+              />
+              <div className="flex items-center justify-between text-[11px] text-fb-text-muted mt-1.5 px-1">
+                <span>Khuyên dùng: 100 - 250 ký tự để hiển thị trọn vẹn và đẹp nhất trên ứng dụng Facebook</span>
+                <span className={pageDescription.length > 255 ? 'text-amber-400 font-bold' : ''}>
+                  {pageDescription.length} / 255 ký tự
+                </span>
+              </div>
             </div>
           </div>
 
@@ -1964,6 +2093,11 @@ export default function FacebookPageSettings() {
                           <span>•</span>
                           <span className="text-cyan-400 font-semibold">{tags.length > 0 ? tags.join(', ') : 'Tự động theo bài viết'}</span>
                         </div>
+                        {pageDescription && (
+                          <p className="text-xs text-slate-300 mt-2 max-w-lg italic line-clamp-2 text-center sm:text-left">
+                            {pageDescription}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -2013,7 +2147,7 @@ export default function FacebookPageSettings() {
                     <div className="flex items-center gap-2.5 text-xs text-slate-300">
                       <span className="material-symbols-outlined text-emerald-400 text-lg">verified_user</span>
                       <span>
-                        Ảnh bìa sẽ được tải vào kho ẩn (<code className="text-cyan-400">published=false</code>), hoàn toàn <b>không tạo bài viết rác</b> trên bảng tin người theo dõi.
+                        Cập nhật đồng bộ Avatar, Ảnh bìa kho ẩn (<code className="text-cyan-400">published=false</code>) và Mô tả Fanpage lên Facebook thật.
                       </span>
                     </div>
 

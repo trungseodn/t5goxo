@@ -1031,7 +1031,7 @@ Story Details:
     siteUrl?: string | null;
     tags?: string[];
     recentTitles?: string[];
-  }): Promise<{ avatarPrompt: string; coverPrompt: string }> {
+  }): Promise<{ avatarPrompt: string; coverPrompt: string; pageDescription: string }> {
     const { pageName, category } = params;
 
     const categoryContext = category && category.trim().length > 0
@@ -1045,10 +1045,65 @@ Story Details:
 
     const coverPrompt = `Facebook page banner for "${pageName}".${categoryContext}${topicsContext} Create a breathtaking cinematic 16:9 wide panoramic cover banner photo. Prominently display the exact brand name "${pageName}" in bold, stylish cinematic typography. Rich atmospheric depth, premium social media visual branding, 8k resolution.`;
 
+    const pageDescription = await this.ztteam_generatePageDescription(params);
+
     return {
       avatarPrompt,
       coverPrompt,
+      pageDescription,
     };
+  }
+
+  /**
+   * ZTTeam: Tạo mô tả Fanpage (Bio / About) thu hút, tự nhiên và chuyên nghiệp bằng AI
+   */
+  async ztteam_generatePageDescription(params: {
+    pageName: string;
+    category?: string | null;
+    siteUrl?: string | null;
+    tags?: string[];
+    recentTitles?: string[];
+  }): Promise<string> {
+    const { pageName, category, tags, recentTitles } = params;
+    const catText = category ? `Category: ${category}.` : '';
+    const tagsText = tags && tags.length > 0 ? `Themes: ${tags.join(', ')}.` : '';
+    const titlesText = recentTitles && recentTitles.length > 0 ? `Sample stories/topics: ${recentTitles.slice(0, 3).join('; ')}.` : '';
+
+    const promptText = `You are a social media branding specialist. Write an engaging, catchy, and professional Facebook Page bio/description for a page named "${pageName}".
+${catText}
+${tagsText}
+${titlesText}
+
+Requirements:
+- 1 to 2 sentences, 120-220 characters max (fits nicely in Facebook Page about/bio section).
+- Friendly, captivating, emotional hook for stories, life reflections, drama, or lifestyle community.
+- Encouraging readers to follow for daily meaningful stories and life journeys.
+- DO NOT use quotation marks, hashtags, or markdown formatting. Output plain text only.`;
+
+    const settings = await this.getSettings();
+    try {
+      if (settings.geminiKey) {
+        const res = await this.ztteam_callGeminiWithFallback(settings.geminiKey, promptText, { temperature: 0.8 });
+        const clean = (res || '').replace(/^["']|["']$/g, '').trim();
+        if (clean) return clean;
+      }
+      if (settings.openaiKey) {
+        const OpenAI = require('openai').default;
+        const openai = new OpenAI({ apiKey: settings.openaiKey.trim() });
+        const comp = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: promptText }],
+          temperature: 0.8,
+          max_tokens: 150,
+        });
+        const clean = (comp.choices?.[0]?.message?.content || '').replace(/^["']|["']$/g, '').trim();
+        if (clean) return clean;
+      }
+    } catch (e: any) {
+      this.logger.warn(`AI description generation failed: ${e.message}`);
+    }
+
+    return `Welcome to ${pageName}! Your daily destination for emotional stories, heartfelt life lessons, and inspiring journeys. Follow us to never miss a moment!`;
   }
 
   /**

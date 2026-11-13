@@ -50,6 +50,7 @@ export default function WordPressSites() {
   const [sourceCategory, setSourceCategory] = useState('');
   const [frequencyCron, setFrequencyCron] = useState('0 */6 * * *');
   const [batchSize, setBatchSize] = useState<number>(1);
+  const [maxScanPages, setMaxScanPages] = useState<number>(50);
   const [keepContentImages, setKeepContentImages] = useState(false);
 
   /** Fanpages state */
@@ -209,6 +210,7 @@ export default function WordPressSites() {
     setSourceCategory('');
     setFrequencyCron('0 */6 * * *');
     setBatchSize(1);
+    setMaxScanPages(50);
     setKeepContentImages(false);
   };
 
@@ -221,9 +223,11 @@ export default function WordPressSites() {
     try {
       const rules = JSON.parse(source.extract_rules_json || '{}');
       setBatchSize(rules.batchSize ? Number(rules.batchSize) : 1);
+      setMaxScanPages(rules.maxScanPages ? Number(rules.maxScanPages) : 50);
       setKeepContentImages(Boolean(rules.keepContentImages));
     } catch (e) {
       setBatchSize(1);
+      setMaxScanPages(50);
       setKeepContentImages(false);
     }
   };
@@ -232,14 +236,14 @@ export default function WordPressSites() {
     e.preventDefault();
     try {
       if (editingSourceId) {
-        await ztteam_updateSource(editingSourceId, { sourceUrl, sourceCategory, frequencyCron, batchSize, keepContentImages });
+        await ztteam_updateSource(editingSourceId, { sourceUrl, sourceCategory, frequencyCron, batchSize, keepContentImages, maxScanPages });
         ztteam_showToast('Cập nhật website nguồn thành công', 'success');
       } else {
         const urls = sourceUrl.split('\n').map(u => u.trim()).filter(u => u);
         let successCount = 0;
         for (const url of urls) {
           try {
-            await ztteam_createSource(siteId, { sourceUrl: url, sourceCategory, frequencyCron, batchSize, keepContentImages });
+            await ztteam_createSource(siteId, { sourceUrl: url, sourceCategory, frequencyCron, batchSize, keepContentImages, maxScanPages });
             successCount++;
           } catch (e) {
             console.error(`Failed to add source ${url}`, e);
@@ -698,6 +702,19 @@ export default function WordPressSites() {
                                 />
                                 <p className="mt-1.5 text-[11px] text-fb-text-muted">Khuyên dùng 1 bài để tiết kiệm API AI và tránh quá tải.</p>
                               </div>
+                              <div>
+                                <label className="text-xs font-bold text-fb-text-muted mb-1.5 block uppercase tracking-wider">Số trang cào sâu</label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={500}
+                                  value={maxScanPages}
+                                  onChange={(e) => setMaxScanPages(Math.max(1, Math.min(500, parseInt(e.target.value) || 50)))}
+                                  className="w-full py-2.5 px-4 rounded-full bg-fb-surface text-fb-text text-xs placeholder:text-fb-text-muted/60 focus:outline-none focus:ring-2 focus:ring-fb-blue"
+                                  required
+                                />
+                                <p className="mt-1.5 text-[11px] text-fb-text-muted">Mặc định 50 trang, tối đa 500 trang. Site News tự giới hạn 5 ngày.</p>
+                              </div>
 
                               <div className="md:col-span-2">
                                 <label className="flex items-center justify-between p-3.5 bg-fb-surface rounded-2xl cursor-pointer border border-white/5">
@@ -788,6 +805,17 @@ export default function WordPressSites() {
                                         return r.batchSize || 1;
                                       } catch (e) { return 1; }
                                     })()} bài
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-[9px] text-fb-text-muted uppercase tracking-wider font-extrabold block">QUÉT SÂU</span>
+                                  <span className="font-bold text-emerald-400 truncate block">
+                                    {(() => {
+                                      try {
+                                        const r = JSON.parse(source.extract_rules_json || '{}');
+                                        return r.maxScanPages || 50;
+                                      } catch (e) { return 50; }
+                                    })()} trang
                                   </span>
                                 </div>
                                 <div>
@@ -980,12 +1008,16 @@ export default function WordPressSites() {
                           </td>
                           <td className="py-3 px-3 text-center">
                             <span className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full ${
-                              item.status === 'SUCCESS' ? 'text-emerald-400 bg-emerald-500/15' : 'text-red-400 bg-red-500/15'
+                              item.status === 'SUCCESS' ? 'text-emerald-400 bg-emerald-500/15' :
+                              item.status.startsWith('SKIPPED') ? 'text-amber-400 bg-amber-500/15' : 'text-red-400 bg-red-500/15'
                             }`}>
                               <span className="material-symbols-outlined text-xs">
-                                {item.status === 'SUCCESS' ? 'check_circle' : 'error'}
+                                {item.status === 'SUCCESS' ? 'check_circle' : item.status.startsWith('SKIPPED') ? 'filter_alt' : 'error'}
                               </span>
-                              {item.status === 'SUCCESS' ? 'Thành công' : 'Thất bại'}
+                              {item.status === 'SUCCESS' ? 'Thành công' :
+                               item.status === 'SKIPPED_NOT_STORY' ? 'Bỏ qua (Tin tức)' :
+                               item.status === 'SKIPPED_TOO_OLD' ? 'Bỏ qua (> 5 ngày)' :
+                               item.status === 'SKIPPED_NOT_ARTICLE' ? 'Bỏ qua (Không hợp lệ)' : 'Thất bại'}
                             </span>
                           </td>
                           <td className="py-3 px-3 text-right text-fb-text-muted text-xs">
