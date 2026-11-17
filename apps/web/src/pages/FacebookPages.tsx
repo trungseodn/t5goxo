@@ -647,11 +647,24 @@ export default function FacebookPages() {
   const [bulkBrandingTargetScope, setBulkBrandingTargetScope] = useState<'selected' | 'bm'>('selected');
   const [bulkBrandingBM, setBulkBrandingBM] = useState<string>('');
   const [bulkBrandingCategory, setBulkBrandingCategory] = useState<string>('');
+  const [bulkBrandingTheme, setBulkBrandingTheme] = useState<string>('Family Drama & Confessions');
+  const [bulkBrandingCustomTheme, setBulkBrandingCustomTheme] = useState<string>('');
   const [bulkBrandingOverwrite, setBulkBrandingOverwrite] = useState<boolean>(false);
   const [isSubmittingBulkCategory, setIsSubmittingBulkCategory] = useState<boolean>(false);
   const [isSubmittingBulkGenerate, setIsSubmittingBulkGenerate] = useState<boolean>(false);
   const [isSubmittingBulkApply, setIsSubmittingBulkApply] = useState<boolean>(false);
   const [bulkBrandingProgressMsg, setBulkBrandingProgressMsg] = useState<string | null>(null);
+
+  /** State Tác Vụ Riêng Biệt: Mô Tả Fanpage (100% Tiếng Anh) Hàng Loạt */
+  const [isBulkBioModalOpen, setIsBulkBioModalOpen] = useState(false);
+  const [bulkBioTargetScope, setBulkBioTargetScope] = useState<'selected' | 'bm'>('selected');
+  const [bulkBioBM, setBulkBioBM] = useState<string>('');
+  const [bulkBioTheme, setBulkBioTheme] = useState<string>('Family Drama & Confessions');
+  const [bulkBioCustomTheme, setBulkBioCustomTheme] = useState<string>('');
+  const [bulkBioOverwrite, setBulkBioOverwrite] = useState<boolean>(false);
+  const [isSubmittingBulkBioGenerate, setIsSubmittingBulkBioGenerate] = useState<boolean>(false);
+  const [isSubmittingBulkBioApply, setIsSubmittingBulkBioApply] = useState<boolean>(false);
+  const [bulkBioProgressMsg, setBulkBioProgressMsg] = useState<string | null>(null);
 
   const uniqueOwners = Array.from(new Set(pages.map(p => p.ownerName).filter(Boolean)));
   const uniqueBusinesses = Array.from(new Set(pages.map(p => p.businessName).filter(Boolean)));
@@ -875,13 +888,15 @@ export default function FacebookPages() {
     }
     try {
       setIsSubmittingBulkGenerate(true);
-      setBulkBrandingProgressMsg(`Gemini đang tạo Avatar & Ảnh bìa 2K cho ${bulkBrandingTargetIds.length} Fanpage... Vui lòng đợi trong giây lát.`);
+      const activeTheme = bulkBrandingTheme === 'custom' ? bulkBrandingCustomTheme.trim() : bulkBrandingTheme;
+      setBulkBrandingProgressMsg(`Gemini đang tạo Avatar & Ảnh bìa Muse.ai 2K (chủ đề: ${activeTheme || 'Mặc định'}) cho ${bulkBrandingTargetIds.length} Fanpage... Vui lòng đợi trong giây lát.`);
       const res = await api.post('/facebook/pages/branding/batch-generate', {
         pageIds: bulkBrandingTargetIds,
         overwriteExisting: bulkBrandingOverwrite,
+        theme: activeTheme || undefined,
       });
       if (res.data?.success) {
-        ztteam_showToast(res.data.message || `Gemini đã tạo xong bộ nhận diện cho ${res.data.count || 0} Page!`, 'success');
+        ztteam_showToast(res.data.message || `Gemini đã tạo xong bộ nhận diện cho ${res.data.totalProcessed || res.data.count || 0} Page!`, 'success');
         setBulkBrandingProgressMsg(`Hoàn tất: Gemini đã tạo thành công ảnh nhận diện 2K.`);
         await ztteam_fetchPagesFromDB();
       }
@@ -921,6 +936,78 @@ export default function FacebookPages() {
       setBulkBrandingProgressMsg(null);
     } finally {
       setIsSubmittingBulkApply(false);
+    }
+  };
+
+  /** Danh sách Fanpage mục tiêu áp dụng cho Tác Vụ Riêng Biệt: Mô Tả Fanpage (English Bio) */
+  const bulkBioTargetPages = useMemo(() => {
+    if (bulkBioTargetScope === 'bm') {
+      if (!bulkBioBM) return [];
+      return pages.filter(p => p.businessName === bulkBioBM && p.isActive !== false);
+    }
+    return pages.filter(p => selectedPageIds.includes(p.id) && p.isActive !== false);
+  }, [bulkBioTargetScope, bulkBioBM, pages, selectedPageIds]);
+
+  const bulkBioTargetIds = useMemo(() => {
+    return bulkBioTargetPages.map(p => (p as any).internalId || p.id);
+  }, [bulkBioTargetPages]);
+
+  /** Xử lý tạo Mô tả Fanpage (100% tiếng Anh) hàng loạt */
+  const handleBulkBioGenerateSubmit = async () => {
+    if (bulkBioTargetIds.length === 0) {
+      ztteam_showToast('Vui lòng chọn ít nhất 1 Fanpage hoặc chọn Doanh Nghiệp (BM)', 'error');
+      return;
+    }
+    try {
+      setIsSubmittingBulkBioGenerate(true);
+      const activeTheme = bulkBioTheme === 'custom' ? bulkBioCustomTheme.trim() : bulkBioTheme;
+      setBulkBioProgressMsg(`Gemini đang viết mô tả 100% tiếng Anh (chủ đề: ${activeTheme || 'Mặc định'}) cho ${bulkBioTargetIds.length} Fanpage...`);
+      const res = await api.post('/facebook/pages/description/batch-generate', {
+        pageIds: bulkBioTargetIds,
+        overwriteExisting: bulkBioOverwrite,
+        theme: activeTheme || undefined,
+      });
+      if (res.data?.success) {
+        ztteam_showToast(`Đã tạo xong mô tả tiếng Anh cho ${res.data.totalProcessed || 0} Fanpage!`, 'success');
+        setBulkBioProgressMsg(`Hoàn tất: Đã tạo mô tả cho ${res.data.totalProcessed || 0} Fanpage.`);
+        await ztteam_fetchPagesFromDB();
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi khi tạo mô tả AI', 'error');
+      setBulkBioProgressMsg(null);
+    } finally {
+      setIsSubmittingBulkBioGenerate(false);
+    }
+  };
+
+  /** Xử lý đồng bộ Mô tả Fanpage lên Facebook hàng loạt */
+  const handleBulkBioApplySubmit = async () => {
+    if (bulkBioTargetIds.length === 0) {
+      ztteam_showToast('Vui lòng chọn ít nhất 1 Fanpage hoặc chọn Doanh Nghiệp (BM)', 'error');
+      return;
+    }
+    const confirm = await ztteam_showConfirm(
+      'Cập Nhật Mô Tả Lên Facebook',
+      `Bạn có chắc chắn muốn cập nhật mô tả giới thiệu lên ${bulkBioTargetPages.length} Fanpage Facebook thật qua Meta Graph API?`
+    );
+    if (!confirm) return;
+
+    try {
+      setIsSubmittingBulkBioApply(true);
+      setBulkBioProgressMsg(`Đang cập nhật mô tả lên ${bulkBioTargetPages.length} Fanpage Facebook...`);
+      const res = await api.post('/facebook/pages/description/batch-apply', {
+        pageIds: bulkBioTargetIds,
+      });
+      if (res.data?.success) {
+        ztteam_showToast(`Đã cập nhật thành công lên ${res.data.successCount || 0} Fanpage!`, 'success');
+        setBulkBioProgressMsg(`Hoàn tất: Đã cập nhật thành công ${res.data.successCount || 0}/${bulkBioTargetPages.length} Fanpage.`);
+        await ztteam_fetchPagesFromDB();
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi cập nhật mô tả Facebook', 'error');
+      setBulkBioProgressMsg(null);
+    } finally {
+      setIsSubmittingBulkBioApply(false);
     }
   };
 
@@ -1337,6 +1424,26 @@ export default function FacebookPages() {
                 <span className="material-symbols-outlined text-sm">palette</span>
                 <span>Bộ Nhận Diện AI (Gemini)</span>
               </button>
+
+              <button
+                onClick={() => {
+                  if (selectedPageIds.length === 0 && filterBusiness) {
+                    setBulkBioTargetScope('bm');
+                    setBulkBioBM(filterBusiness);
+                  } else if (selectedPageIds.length === 0) {
+                    setBulkBioTargetScope('selected');
+                    handleSelectAllCurrentTab();
+                  } else {
+                    setBulkBioTargetScope('selected');
+                  }
+                  setIsBulkBioModalOpen(true);
+                }}
+                className="px-3 py-1 rounded-lg bg-teal-600/20 hover:bg-teal-600/30 text-teal-300 font-bold flex items-center gap-1.5 transition-colors border border-teal-500/40"
+                title="Tác vụ riêng biệt: Tạo hàng loạt Mô tả Fanpage (100% tiếng Anh) theo chủ đề và đồng bộ Facebook"
+              >
+                <span className="material-symbols-outlined text-sm">description</span>
+                <span>Mô Tả Fanpage (English Bio)</span>
+              </button>
             </div>
           </div>
 
@@ -1532,6 +1639,17 @@ export default function FacebookPages() {
             >
               <span className="material-symbols-outlined text-base">palette</span>
               <span>Bộ Nhận Diện AI (Gemini)</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setBulkBioTargetScope('selected');
+                setIsBulkBioModalOpen(true);
+              }}
+              className="px-4 py-2 bg-gradient-to-r from-teal-700 via-emerald-600 to-teal-600 hover:opacity-90 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-teal-500/20 active:scale-95 transition-all"
+            >
+              <span className="material-symbols-outlined text-base">description</span>
+              <span>Mô Tả Fanpage (English Bio)</span>
             </button>
 
             <button
@@ -2358,8 +2476,38 @@ export default function FacebookPages() {
                 </div>
 
                 <p className="text-[11px] text-fb-text-muted leading-relaxed">
-                  Gemini sẽ quét ngữ cảnh từ Hạng mục, website nguồn WordPress và 3 bài viết gần nhất của từng Fanpage để tự động vẽ Avatar (1:1) và Ảnh bìa (16:9) đạt chuẩn độ phân giải 2K.
+                  Gemini sẽ quét ngữ cảnh từ Hạng mục, website nguồn WordPress và 3 bài viết gần nhất của từng Fanpage để tự động vẽ Avatar (1:1) và Ảnh bìa (16:9) đạt chuẩn độ phân giải 2K theo phong cách điện ảnh Muse.ai.
                 </p>
+
+                {/** Chọn chủ đề phong cách Muse.ai */}
+                <div className="space-y-2 pt-1 border-t border-fb-surface-hover/50">
+                  <label className="block text-[11px] font-bold text-fb-text">
+                    Chủ đề & Phong cách điện ảnh (Muse.ai Style)
+                  </label>
+                  <CustomDropdown
+                    value={bulkBrandingTheme}
+                    onChange={(val) => setBulkBrandingTheme(String(val))}
+                    options={[
+                      { value: 'Family Drama & Confessions', label: 'Family Drama & Confessions (Kịch tính gia đình & Thú nhận)' },
+                      { value: 'Emotional Life & Healing', label: 'Emotional Life & Healing (Tâm sự cảm xúc & Chữa lành)' },
+                      { value: 'Heartwarming & True Miracles', label: 'Heartwarming & True Miracles (Kỳ diệu cuộc sống & Ấm áp)' },
+                      { value: 'Mystery, Secrets & Suspense', label: 'Mystery, Secrets & Suspense (Bí mật giấu kín & Ly kỳ)' },
+                      { value: 'Love, Marriage & Relationships', label: 'Love, Marriage & Relationships (Hôn nhân & Sóng gió tình cảm)' },
+                      { value: 'Daily Wisdom & Life Lessons', label: 'Daily Wisdom & Life Lessons (Triết lý sống & Bài học nhân sinh)' },
+                      { value: 'custom', label: 'Tùy chỉnh chủ đề riêng...' },
+                    ]}
+                    className="w-full"
+                  />
+                  {bulkBrandingTheme === 'custom' && (
+                    <input
+                      type="text"
+                      value={bulkBrandingCustomTheme}
+                      onChange={(e) => setBulkBrandingCustomTheme(e.target.value)}
+                      placeholder="Nhập mô tả chủ đề tùy chỉnh (ví dụ: Cyberpunk noir drama, retro filmic...)"
+                      className="w-full bg-fb-surface-hover/80 border border-fb-surface-hover focus:border-cyan-500 rounded-xl px-3 py-2 text-xs text-fb-text focus:outline-none transition-colors"
+                    />
+                  )}
+                </div>
 
                 <label className="flex items-center gap-2.5 text-xs text-fb-text cursor-pointer pt-1">
                   <input
@@ -2412,6 +2560,235 @@ export default function FacebookPages() {
                 onClick={() => {
                   setIsBulkBrandingModalOpen(false);
                   setBulkBrandingProgressMsg(null);
+                }}
+                className="px-5 py-2 bg-fb-surface-hover hover:bg-fb-surface-hover/80 text-fb-text font-bold rounded-xl text-xs transition-colors"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/** MODAL TÁC VỤ RIÊNG BIỆT: MÔ TẢ FANPAGE THEO CHỦ ĐỀ (100% TIẾNG ANH) */}
+      {isBulkBioModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-fb-surface w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-5 border border-slate-700/60 flex flex-col">
+            
+            {/** Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-fb-surface-hover/50">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-teal-500/15 border border-teal-500/30 text-teal-400 flex items-center justify-center shadow-lg">
+                  <span className="material-symbols-outlined text-2xl">description</span>
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-fb-text">Tác Vụ Riêng Biệt: Mô Tả Fanpage (100% Tiếng Anh)</h3>
+                  <p className="text-xs text-fb-text-muted mt-0.5">
+                    Tạo hàng loạt Bio/About theo chủ đề cảm xúc bằng Gemini AI & Đồng bộ lên Meta Graph API
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsBulkBioModalOpen(false);
+                  setBulkBioProgressMsg(null);
+                }}
+                className="w-8 h-8 rounded-full hover:bg-fb-surface-hover flex items-center justify-center text-fb-text-muted hover:text-white transition-colors"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+
+            {/** Progress Notification Banner */}
+            {bulkBioProgressMsg && (
+              <div className="p-3 bg-teal-500/10 border border-teal-500/30 rounded-xl flex items-center gap-2.5 text-xs text-teal-300 animate-pulse">
+                <span className="material-symbols-outlined text-base shrink-0 animate-spin">sync</span>
+                <span className="flex-1 font-medium">{bulkBioProgressMsg}</span>
+              </div>
+            )}
+
+            {/** Modal Content */}
+            <div className="space-y-4">
+              {/** PHẦN 1: CHỌN ĐỐI TƯỢNG ÁP DỤNG */}
+              <div className="p-4 bg-fb-surface-hover/30 rounded-2xl border border-fb-surface-hover/50 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 text-xs font-bold flex items-center justify-center">1</span>
+                  <span className="text-xs font-bold text-fb-text uppercase tracking-wider">Chọn Đối Tượng Áp Dụng</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setBulkBioTargetScope('selected')}
+                    className={`p-3 rounded-xl border text-left transition-all flex flex-col gap-1 ${
+                      bulkBioTargetScope === 'selected'
+                        ? 'bg-blue-600/15 border-blue-500 text-white'
+                        : 'bg-fb-surface-hover/40 border-transparent text-fb-text-muted hover:text-fb-text'
+                    }`}
+                  >
+                    <span className="text-xs font-bold flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm">checklist</span>
+                      Các Fanpage Đã Chọn ({selectedPageIds.length})
+                    </span>
+                    <span className="text-[11px] opacity-75">Áp dụng cho những Page bạn đã tick chọn ngoài bảng</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBulkBioTargetScope('bm');
+                      if (!bulkBioBM && uniqueBusinesses.length > 0) {
+                        setBulkBioBM(uniqueBusinesses[0]);
+                      }
+                    }}
+                    className={`p-3 rounded-xl border text-left transition-all flex flex-col gap-1 ${
+                      bulkBioTargetScope === 'bm'
+                        ? 'bg-blue-600/15 border-blue-500 text-white'
+                        : 'bg-fb-surface-hover/40 border-transparent text-fb-text-muted hover:text-fb-text'
+                    }`}
+                  >
+                    <span className="text-xs font-bold flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm">business</span>
+                      Toàn Bộ Theo Doanh Nghiệp (BM)
+                    </span>
+                    <span className="text-[11px] opacity-75">Áp dụng hàng loạt cho tất cả Page thuộc 1 BM cụ thể</span>
+                  </button>
+                </div>
+
+                {bulkBioTargetScope === 'bm' && (
+                  <div className="pt-2">
+                    <label className="block text-[11px] font-bold text-fb-text mb-1">
+                      Chọn Doanh Nghiệp (BM) cần áp dụng:
+                    </label>
+                    <CustomDropdown
+                      value={bulkBioBM}
+                      onChange={(val) => setBulkBioBM(String(val))}
+                      options={uniqueBusinesses.map(b => ({ value: b, label: b }))}
+                      placeholder="-- Chọn Business Manager --"
+                      className="w-full"
+                    />
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between text-xs text-fb-text-muted pt-1">
+                  <span>Số lượng Fanpage sẽ áp dụng:</span>
+                  <span className="font-extrabold text-teal-400 text-sm">
+                    {bulkBioTargetPages.length} Fanpage
+                  </span>
+                </div>
+              </div>
+
+              {/** PHẦN 2: CHỦ ĐỀ & TẠO MÔ TẢ (100% TIẾNG ANH) */}
+              <div className="p-4 bg-fb-surface-hover/30 rounded-2xl border border-fb-surface-hover/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-teal-500/20 text-teal-400 text-xs font-bold flex items-center justify-center">2</span>
+                    <span className="text-xs font-bold text-fb-text uppercase tracking-wider">Tạo Mô Tả 100% Tiếng Anh (Gemini AI)</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBulkBioGenerateSubmit}
+                    disabled={isSubmittingBulkBioGenerate || bulkBioTargetPages.length === 0}
+                    className="px-4 py-1.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:opacity-90 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-teal-500/20 active:scale-95 transition-all disabled:opacity-50 shrink-0"
+                  >
+                    {isSubmittingBulkBioGenerate ? (
+                      <>
+                        <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                        <span>Gemini Đang Viết...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">auto_awesome</span>
+                        <span>Viết Mô Tả Hàng Loạt</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-fb-text-muted leading-relaxed">
+                  Hệ thống sử dụng Gemini với chỉ thị nghiêm ngặt <b>100% tiếng Anh</b>, độ dài tối ưu 120-220 ký tự, lời dẫn hấp dẫn chuẩn Facebook Bio, hoàn toàn không chứa tiếng Việt, không hashtag, không dấu ngoặc kép.
+                </p>
+
+                <div className="space-y-2">
+                  <label className="block text-[11px] font-bold text-fb-text">
+                    Chọn chủ đề nội dung (Theme):
+                  </label>
+                  <CustomDropdown
+                    value={bulkBioTheme}
+                    onChange={(val) => setBulkBioTheme(String(val))}
+                    options={[
+                      { value: 'Family Drama & Confessions', label: 'Family Drama & Confessions (Kịch tính gia đình & Thú nhận)' },
+                      { value: 'Emotional Life & Healing', label: 'Emotional Life & Healing (Tâm sự cảm xúc & Chữa lành)' },
+                      { value: 'Heartwarming & True Miracles', label: 'Heartwarming & True Miracles (Kỳ diệu cuộc sống & Ấm áp)' },
+                      { value: 'Mystery, Secrets & Suspense', label: 'Mystery, Secrets & Suspense (Bí mật giấu kín & Ly kỳ)' },
+                      { value: 'Love, Marriage & Relationships', label: 'Love, Marriage & Relationships (Hôn nhân & Sóng gió tình cảm)' },
+                      { value: 'Daily Wisdom & Life Lessons', label: 'Daily Wisdom & Life Lessons (Triết lý sống & Bài học nhân sinh)' },
+                      { value: 'custom', label: 'Tùy chỉnh chủ đề riêng...' },
+                    ]}
+                    className="w-full"
+                  />
+                  {bulkBioTheme === 'custom' && (
+                    <input
+                      type="text"
+                      value={bulkBioCustomTheme}
+                      onChange={(e) => setBulkBioCustomTheme(e.target.value)}
+                      placeholder="Nhập chủ đề tùy chỉnh (ví dụ: Modern relationships, workplace confessions...)"
+                      className="w-full bg-fb-surface-hover/80 border border-fb-surface-hover focus:border-teal-500 rounded-xl px-3 py-2 text-xs text-fb-text focus:outline-none transition-colors"
+                    />
+                  )}
+                </div>
+
+                <label className="flex items-center gap-2.5 text-xs text-fb-text cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={bulkBioOverwrite}
+                    onChange={(e) => setBulkBioOverwrite(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 text-teal-600 focus:ring-0 focus:ring-offset-0 bg-slate-900 cursor-pointer"
+                  />
+                  <span>Viết lại cả những Fanpage đã từng có mô tả (Ghi đè mô tả cũ)</span>
+                </label>
+              </div>
+
+              {/** PHẦN 3: ĐỒNG BỘ LÊN FACEBOOK HÀNG LOẠT */}
+              <div className="p-4 bg-fb-surface-hover/30 rounded-2xl border border-fb-surface-hover/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold flex items-center justify-center">3</span>
+                    <span className="text-xs font-bold text-fb-text uppercase tracking-wider">Đồng Bộ Lên Facebook Thật</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBulkBioApplySubmit}
+                    disabled={isSubmittingBulkBioApply || bulkBioTargetPages.length === 0}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-emerald-500/20 active:scale-95 transition-all disabled:opacity-50 shrink-0"
+                  >
+                    {isSubmittingBulkBioApply ? (
+                      <>
+                        <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                        <span>Đang Cập Nhật...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">cloud_upload</span>
+                        <span>Cập Nhật Lên Fanpage Thật</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-fb-text-muted leading-relaxed">
+                  Cập nhật trường <code>about</code> và <code>description</code> trên Fanpage Facebook thật qua Meta Graph API với độ trễ 2.5 giây giữa các Page để đảm bảo an toàn, không bị giới hạn tần suất (rate-limit).
+                </p>
+              </div>
+            </div>
+
+            {/** Modal Footer */}
+            <div className="pt-3 border-t border-fb-surface-hover/50 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsBulkBioModalOpen(false);
+                  setBulkBioProgressMsg(null);
                 }}
                 className="px-5 py-2 bg-fb-surface-hover hover:bg-fb-surface-hover/80 text-fb-text font-bold rounded-xl text-xs transition-colors"
               >

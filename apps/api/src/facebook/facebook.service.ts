@@ -2501,9 +2501,9 @@ export class ZTTeamFacebookService {
   }
 
   /**
-   * ZTTeam: Tự động phân tích chủ đề Fanpage và tạo bộ nhận diện Avatar (1:1) & Cover (16:9) bằng AI Sáng Tạo
+   * ZTTeam: Tự động phân tích chủ đề Fanpage và tạo bộ nhận diện Avatar (1:1) & Cover (16:9) theo Chủ Đề (Phong cách Muse.ai)
    */
-  async ztteam_generatePageBranding(internalPageId: string) {
+  async ztteam_generatePageBranding(internalPageId: string, theme?: string) {
     const page = await this.prisma.ztteam_pages.findFirst({
       where: {
         OR: [
@@ -2549,15 +2549,16 @@ export class ZTTeamFacebookService {
       ...recentReels.map(r => r.wp_post_title)
     ].filter(Boolean).slice(0, 5);
 
-    this.logger.log(`Tạo bộ nhận diện AI cho Page "${page.name}" (Site: ${connectedSite}, Topics: ${recentTitles.length})`);
+    this.logger.log(`Tạo bộ nhận diện AI cho Page "${page.name}" (Site: ${connectedSite}, Topics: ${recentTitles.length}, Theme: ${theme || 'mặc định'})`);
 
-    /** 2. Sử dụng OpenAI sáng tạo 2 prompt mỹ thuật chuẩn xác cho Avatar và Cover */
+    /** 2. Sử dụng AI sáng tạo prompt chuẩn xác theo phong cách điện ảnh Muse.ai */
     const prompts = await this.aiService.ztteam_generateBrandingPrompts({
       pageName: page.name,
       category: page.category,
       siteUrl: connectedSite,
       tags: page.tags,
-      recentTitles
+      recentTitles,
+      theme,
     });
 
     /** 3. Gọi tạo ảnh Avatar 1:1 */
@@ -2751,9 +2752,9 @@ export class ZTTeamFacebookService {
   }
 
   /**
-   * ZTTeam: Tạo lại riêng Avatar (1:1) hoặc Cover (16:9) nếu muốn đổi phương án khác
+   * ZTTeam: Tạo lại riêng Avatar (1:1) hoặc Cover (16:9) theo Chủ Đề hoặc Prompt tùy chỉnh
    */
-  async ztteam_regenerateBrandingItem(internalPageId: string, type: 'avatar' | 'cover', prompt?: string) {
+  async ztteam_regenerateBrandingItem(internalPageId: string, type: 'avatar' | 'cover', prompt?: string, theme?: string) {
     const page = await this.prisma.ztteam_pages.findFirst({
       where: {
         OR: [
@@ -2794,7 +2795,8 @@ export class ZTTeamFacebookService {
         category: page.category,
         siteUrl: connectedSite,
         tags: page.tags,
-        recentTitles
+        recentTitles,
+        theme,
       });
 
       activePrompt = type === 'avatar' ? prompts.avatarPrompt : prompts.coverPrompt;
@@ -3072,9 +3074,9 @@ export class ZTTeamFacebookService {
   }
 
   /**
-   * ZTTeam: Tạo riêng Mô tả Fanpage (Bio / About) bằng AI
+   * ZTTeam: Tạo riêng Mô tả Fanpage (Bio / About) bằng AI theo Chủ Đề (100% Tiếng Anh)
    */
-  async ztteam_generatePageDescription(internalPageId: string): Promise<{
+  async ztteam_generatePageDescription(internalPageId: string, theme?: string): Promise<{
     success: boolean;
     pageId: string;
     description: string;
@@ -3102,6 +3104,7 @@ export class ZTTeamFacebookService {
       category: page.category,
       tags: page.tags,
       recentTitles,
+      theme,
     });
 
     await this.prisma.ztteam_pages.update({
@@ -3453,14 +3456,15 @@ export class ZTTeamFacebookService {
   }
 
   /**
-   * ZTTeam: Tạo hàng loạt Avatar & Ảnh bìa cho các Fanpage chưa có hoặc cần sinh mới bằng Gemini
+   * ZTTeam: Tạo hàng loạt Avatar & Ảnh bìa theo Chủ Đề (Phong cách Muse.ai) cho các Fanpage bằng Gemini
    */
   async ztteam_batchGenerateBranding(options: {
     limit?: number;
     overwriteExisting?: boolean;
     pageIds?: string[];
+    theme?: string;
   } = {}) {
-    const { limit = 68, overwriteExisting = false, pageIds } = options;
+    const { limit = 68, overwriteExisting = false, pageIds, theme } = options;
 
     const whereClause: any = { is_active: true };
     if (pageIds && pageIds.length > 0) {
@@ -3475,7 +3479,7 @@ export class ZTTeamFacebookService {
       orderBy: { name: 'asc' },
     });
 
-    this.logger.log(`[Branding Batch] Bắt đầu xử lý hàng loạt cho ${pages.length} Fanpage (Limit: ${limit}, Overwrite: ${overwriteExisting})...`);
+    this.logger.log(`[Branding Batch] Bắt đầu xử lý hàng loạt theo chủ đề "${theme || 'Mặc định'}" cho ${pages.length} Fanpage (Limit: ${limit}, Overwrite: ${overwriteExisting})...`);
 
     const results: any[] = [];
     let processedCount = 0;
@@ -3496,18 +3500,18 @@ export class ZTTeamFacebookService {
       }
 
       try {
-        this.logger.log(`[Branding Batch] [${processedCount + 1}/${limit}] Đang xử lý Page "${page.name}"...`);
+        this.logger.log(`[Branding Batch] [${processedCount + 1}/${limit}] Đang xử lý Page "${page.name}" theo chủ đề "${theme || 'mặc định'}"...`);
         let pageResult: any = null;
 
         if (overwriteExisting || (!hasAvatar && !hasCover)) {
           /** Tạo cả bộ Avatar và Cover */
-          pageResult = await this.ztteam_generatePageBranding(page.id);
+          pageResult = await this.ztteam_generatePageBranding(page.id, theme);
         } else if (!hasCover) {
           /** Chỉ thiếu Cover */
-          pageResult = await this.ztteam_regenerateBrandingItem(page.id, 'cover');
+          pageResult = await this.ztteam_regenerateBrandingItem(page.id, 'cover', undefined, theme);
         } else if (!hasAvatar) {
           /** Chỉ thiếu Avatar */
-          pageResult = await this.ztteam_regenerateBrandingItem(page.id, 'avatar');
+          pageResult = await this.ztteam_regenerateBrandingItem(page.id, 'avatar', undefined, theme);
         }
 
         results.push({
@@ -3613,6 +3617,146 @@ export class ZTTeamFacebookService {
       }
 
       /** Giãn cách an toàn giữa các request gửi đến Facebook Graph API */
+      if (i < pages.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    return {
+      success: true,
+      totalRequested: pages.length,
+      successCount,
+      failCount,
+      results,
+    };
+  }
+
+  /**
+   * ZTTeam: Tác Vụ Riêng Biệt - Tạo hàng loạt Mô tả Fanpage (100% tiếng Anh) theo chủ đề bằng AI
+   */
+  async ztteam_batchGenerateDescriptions(options: {
+    limit?: number;
+    overwriteExisting?: boolean;
+    pageIds?: string[];
+    theme?: string;
+  } = {}) {
+    const { limit = 100, overwriteExisting = false, pageIds, theme } = options;
+
+    const whereClause: any = { is_active: true };
+    if (pageIds && pageIds.length > 0) {
+      whereClause.OR = [
+        { id: { in: pageIds } },
+        { fb_page_id: { in: pageIds } }
+      ];
+    }
+
+    const pages = await this.prisma.ztteam_pages.findMany({
+      where: whereClause,
+      orderBy: { name: 'asc' },
+    });
+
+    this.logger.log(`[Bio Batch] Bắt đầu tạo mô tả hàng loạt (100% tiếng Anh, chủ đề "${theme || 'Mặc định'}") cho ${pages.length} Fanpage (Limit: ${limit}, Overwrite: ${overwriteExisting})...`);
+
+    const results: any[] = [];
+    let processedCount = 0;
+
+    for (const page of pages) {
+      if (processedCount >= limit) {
+        this.logger.log(`[Bio Batch] Đã đạt giới hạn số lượng (${limit} page). Dừng.`);
+        break;
+      }
+
+      const hasDesc = !!(page as any).branding_description;
+      if (!overwriteExisting && hasDesc) {
+        this.logger.log(`[Bio Batch] Page "${page.name}" đã có mô tả. Bỏ qua.`);
+        results.push({ pageId: page.id, name: page.name, status: 'SKIPPED', message: 'Đã có mô tả' });
+        continue;
+      }
+
+      try {
+        this.logger.log(`[Bio Batch] [${processedCount + 1}/${limit}] Đang tạo mô tả cho Page "${page.name}"...`);
+        const descRes = await this.ztteam_generatePageDescription(page.id, theme);
+        results.push({
+          pageId: page.id,
+          name: page.name,
+          status: 'SUCCESS',
+          description: descRes.description,
+        });
+        processedCount++;
+
+        // Delay 500ms nhẹ nhàng
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        this.logger.error(`[Bio Batch] Lỗi tạo mô tả Page "${page.name}": ${errMsg}`);
+        results.push({
+          pageId: page.id,
+          name: page.name,
+          status: 'FAILED',
+          error: errMsg,
+        });
+      }
+    }
+
+    return {
+      success: true,
+      totalRequested: pages.length,
+      totalProcessed: processedCount,
+      results,
+    };
+  }
+
+  /**
+   * ZTTeam: Tác Vụ Riêng Biệt - Áp dụng hàng loạt Mô tả Fanpage lên Facebook Graph API
+   */
+  async ztteam_batchApplyDescriptions(options: { pageIds?: string[]; delayMs?: number } = {}) {
+    const { pageIds, delayMs = 2500 } = options;
+
+    const whereClause: any = {
+      is_active: true,
+      branding_description: { not: null },
+    };
+
+    if (pageIds && pageIds.length > 0) {
+      whereClause.AND = [
+        {
+          OR: [
+            { id: { in: pageIds } },
+            { fb_page_id: { in: pageIds } }
+          ]
+        }
+      ];
+    }
+
+    const pages = await this.prisma.ztteam_pages.findMany({
+      where: whereClause,
+      orderBy: { name: 'asc' },
+    });
+
+    this.logger.log(`[Bio Batch Apply] Bắt đầu đồng bộ mô tả lên Facebook cho ${pages.length} Fanpage (Delay: ${delayMs}ms)...`);
+
+    const results: any[] = [];
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i];
+      const index = i + 1;
+      this.logger.log(`[Bio Batch Apply] [${index}/${pages.length}] Đang cập nhật mô tả cho Page "${page.name}"...`);
+
+      try {
+        const desc = (page as any).branding_description;
+        const res = await this.ztteam_updatePageDescription(page.id, desc);
+        results.push({ pageId: page.id, name: page.name, status: 'SUCCESS', result: res });
+        successCount++;
+        this.logger.log(`[Bio Batch Apply] [${index}/${pages.length}] Page "${page.name}" cập nhật mô tả thành công!`);
+      } catch (err: any) {
+        failCount++;
+        const errMsg = err?.message || String(err);
+        this.logger.error(`[Bio Batch Apply] [${index}/${pages.length}] Lỗi cập nhật mô tả Page "${page.name}": ${errMsg}`);
+        results.push({ pageId: page.id, name: page.name, status: 'FAILED', error: errMsg });
+      }
+
       if (i < pages.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }

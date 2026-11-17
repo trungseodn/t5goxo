@@ -1023,7 +1023,7 @@ Story Details:
   }
 
   /**
-   * ZTTeam: Sáng tạo prompt chuẩn cho Avatar (1:1) và Cover (16:9) bám sát Hạng mục (Category) và tên Page
+   * ZTTeam: Sáng tạo prompt chuẩn cho Avatar (1:1) và Cover (16:9) theo Chủ Đề (Phong cách điện ảnh Muse.ai)
    */
   async ztteam_generateBrandingPrompts(params: {
     pageName: string;
@@ -1031,19 +1031,26 @@ Story Details:
     siteUrl?: string | null;
     tags?: string[];
     recentTitles?: string[];
+    theme?: string | null;
   }): Promise<{ avatarPrompt: string; coverPrompt: string; pageDescription: string }> {
-    const { pageName, category } = params;
+    const { pageName, category, theme } = params;
+
+    const themeContext = theme && theme.trim().length > 0
+      ? ` Core Storytelling Theme: "${theme}". The visual atmosphere, mood, symbolic narrative elements, and color palette must strongly reflect this theme.`
+      : '';
 
     const categoryContext = category && category.trim().length > 0
-      ? ` The page category is "${category}". The visual design, symbolism, color palette and aesthetic must strongly represent this "${category}" category.`
+      ? ` The page category is "${category}". The visual design, symbolism, and aesthetic must naturally represent this category.`
       : '';
     const topicsContext = params.recentTitles && params.recentTitles.length > 0
-      ? ` Context themes: ${params.recentTitles.slice(0, 3).join(', ')}.`
+      ? ` Context themes from recent stories: ${params.recentTitles.slice(0, 3).join(', ')}.`
       : '';
 
-    const avatarPrompt = `Facebook page brand identity for "${pageName}".${categoryContext}${topicsContext} Create a premium, iconic 1:1 square profile avatar branding image. Clearly incorporate the exact brand name "${pageName}" in clean, modern typography. Professional aesthetic, sharp details, vibrant colors, iconic composition, 8k resolution.`;
+    const museStyleAesthetic = ` Muse.ai cinematic style: dramatic chiaroscuro lighting, deep emotional narrative depth, rich filmic atmosphere, 8k resolution, cinematic storytelling composition.`;
 
-    const coverPrompt = `Facebook page banner for "${pageName}".${categoryContext}${topicsContext} Create a breathtaking cinematic 16:9 wide panoramic cover banner photo. Prominently display the exact brand name "${pageName}" in bold, stylish cinematic typography. Rich atmospheric depth, premium social media visual branding, 8k resolution.`;
+    const avatarPrompt = `Facebook page brand identity for "${pageName}".${themeContext}${categoryContext}${topicsContext}${museStyleAesthetic} Create a premium, iconic 1:1 square profile avatar branding image. Clearly incorporate the exact brand name "${pageName}" in clean, modern typography. Professional aesthetic, sharp details, vibrant colors, iconic composition.`;
+
+    const coverPrompt = `Facebook page cinematic banner for "${pageName}".${themeContext}${categoryContext}${topicsContext}${museStyleAesthetic} Create a breathtaking cinematic 16:9 wide panoramic cover banner photo. Prominently display the exact brand name "${pageName}" in bold, stylish cinematic typography. Rich atmospheric depth, premium social media visual branding, 8k resolution.`;
 
     const pageDescription = await this.ztteam_generatePageDescription(params);
 
@@ -1055,7 +1062,7 @@ Story Details:
   }
 
   /**
-   * ZTTeam: Tạo mô tả Fanpage (Bio / About) thu hút, tự nhiên và chuyên nghiệp bằng AI
+   * ZTTeam: Tạo mô tả Fanpage (Bio / About) thu hút, tự nhiên và chuyên nghiệp bằng AI (100% TIẾNG ANH THEO CHỦ ĐỀ)
    */
   async ztteam_generatePageDescription(params: {
     pageName: string;
@@ -1063,22 +1070,26 @@ Story Details:
     siteUrl?: string | null;
     tags?: string[];
     recentTitles?: string[];
+    theme?: string | null;
   }): Promise<string> {
-    const { pageName, category, tags, recentTitles } = params;
+    const { pageName, category, tags, recentTitles, theme } = params;
+    const themeText = theme && theme.trim().length > 0 ? `Theme / Niche: ${theme}.` : '';
     const catText = category ? `Category: ${category}.` : '';
-    const tagsText = tags && tags.length > 0 ? `Themes: ${tags.join(', ')}.` : '';
+    const tagsText = tags && tags.length > 0 ? `Tags: ${tags.join(', ')}.` : '';
     const titlesText = recentTitles && recentTitles.length > 0 ? `Sample stories/topics: ${recentTitles.slice(0, 3).join('; ')}.` : '';
 
-    const promptText = `You are a social media branding specialist. Write an engaging, catchy, and professional Facebook Page bio/description for a page named "${pageName}".
+    const promptText = `You are a social media branding specialist. Write an engaging, catchy, and professional Facebook Page bio/description (100% IN ENGLISH) for a Facebook page named "${pageName}".
+${themeText}
 ${catText}
 ${tagsText}
 ${titlesText}
 
-Requirements:
-- 1 to 2 sentences, 120-220 characters max (fits nicely in Facebook Page about/bio section).
-- Friendly, captivating, emotional hook for stories, life reflections, drama, or lifestyle community.
+CRITICAL REQUIREMENTS:
+- MUST BE 100% IN ENGLISH (DO NOT write any Vietnamese or other languages).
+- Exactly 1 to 2 sentences, between 120 and 220 characters max (fits cleanly in Facebook Page about/bio section).
+- Friendly, captivating, emotional hook tailored to the "${theme || 'storytelling & life journeys'}" theme.
 - Encouraging readers to follow for daily meaningful stories and life journeys.
-- DO NOT use quotation marks, hashtags, or markdown formatting. Output plain text only.`;
+- DO NOT use quotation marks, hashtags, emojis, or markdown formatting. Output plain text only.`;
 
     const settings = await this.getSettings();
     try {

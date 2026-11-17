@@ -146,7 +146,7 @@ export class ZTTeamFacebookController {
 
   @Post('pages/branding/batch-generate')
   ztteam_batchGenerateBranding(
-    @Body() body: { limit?: number; overwriteExisting?: boolean; pageIds?: string[] }
+    @Body() body: { limit?: number; overwriteExisting?: boolean; pageIds?: string[]; theme?: string }
   ) {
     return this.facebookService.ztteam_batchGenerateBranding(body || {});
   }
@@ -193,16 +193,19 @@ export class ZTTeamFacebookController {
   }
 
   @Post('pages/:pageId/branding/generate')
-  ztteam_generateBranding(@Param('pageId') pageId: string) {
-    return this.facebookService.ztteam_generatePageBranding(pageId);
+  ztteam_generateBranding(
+    @Param('pageId') pageId: string,
+    @Body('theme') theme?: string
+  ) {
+    return this.facebookService.ztteam_generatePageBranding(pageId, theme);
   }
 
   @Post('pages/:pageId/branding/regenerate-item')
   ztteam_regenerateBrandingItem(
     @Param('pageId') pageId: string,
-    @Body() body: { type: 'avatar' | 'cover'; prompt?: string }
+    @Body() body: { type: 'avatar' | 'cover'; prompt?: string; theme?: string }
   ) {
-    return this.facebookService.ztteam_regenerateBrandingItem(pageId, body.type, body.prompt);
+    return this.facebookService.ztteam_regenerateBrandingItem(pageId, body.type, body.prompt, body.theme);
   }
 
   @Post('pages/:pageId/branding/apply')
@@ -220,8 +223,11 @@ export class ZTTeamFacebookController {
   }
 
   @Post('pages/:pageId/description/generate')
-  ztteam_generateDescription(@Param('pageId') pageId: string) {
-    return this.facebookService.ztteam_generatePageDescription(pageId);
+  ztteam_generateDescription(
+    @Param('pageId') pageId: string,
+    @Body('theme') theme?: string
+  ) {
+    return this.facebookService.ztteam_generatePageDescription(pageId, theme);
   }
 
   @Post('pages/:pageId/description/update')
@@ -230,5 +236,19 @@ export class ZTTeamFacebookController {
     @Body('description') description: string
   ) {
     return this.facebookService.ztteam_updatePageDescription(pageId, description);
+  }
+
+  @Post('pages/description/batch-generate')
+  ztteam_batchGenerateDescriptions(
+    @Body() body: { limit?: number; overwriteExisting?: boolean; pageIds?: string[]; theme?: string }
+  ) {
+    return this.facebookService.ztteam_batchGenerateDescriptions(body || {});
+  }
+
+  @Post('pages/description/batch-apply')
+  ztteam_batchApplyDescriptions(
+    @Body() body: { pageIds?: string[]; delayMs?: number }
+  ) {
+    return this.facebookService.ztteam_batchApplyDescriptions(body || {});
   }
 }

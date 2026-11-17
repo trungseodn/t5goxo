@@ -94,6 +94,8 @@ export default function FacebookPageSettings() {
   const [pageDescription, setPageDescription] = useState<string>('');
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
   const [isUpdatingDescription, setIsUpdatingDescription] = useState(false);
+  const [brandingTheme, setBrandingTheme] = useState<string>('Family Drama & Confessions');
+  const [customBrandingTheme, setCustomBrandingTheme] = useState<string>('');
   const [brandingData, setBrandingData] = useState<{
     avatarUrl?: string;
     avatarLocalPath?: string;
@@ -584,8 +586,11 @@ export default function FacebookPageSettings() {
     if (!id) return;
     setIsGeneratingBranding(true);
     try {
-      ztteam_showToast('Đang phân tích chủ đề và sinh ảnh nhận diện kèm mô tả qua Google Gemini AI, vui lòng đợi 15-30 giây...', 'info');
-      const res = await api.post(`/facebook/pages/${id}/branding/generate`);
+      ztteam_showToast('Đang phân tích chủ đề và sinh ảnh nhận diện kèm mô tả qua Google Gemini AI (Muse.ai style), vui lòng đợi 15-30 giây...', 'info');
+      const activeTheme = brandingTheme === 'custom' ? customBrandingTheme.trim() : brandingTheme;
+      const res = await api.post(`/facebook/pages/${id}/branding/generate`, {
+        theme: activeTheme || undefined
+      });
       if (res.data?.success) {
         setBrandingData(res.data);
         if (res.data.description) {
@@ -600,13 +605,16 @@ export default function FacebookPageSettings() {
     }
   };
 
-  /** ZTTeam: Tạo riêng Mô tả Fanpage bằng AI */
+  /** ZTTeam: Tạo riêng Mô tả Fanpage bằng AI (100% tiếng Anh) */
   const ztteam_handleGenerateDescription = async () => {
     if (!id) return;
     setIsGeneratingDescription(true);
     try {
-      ztteam_showToast('Đang tạo mô tả Fanpage bằng Google Gemini AI...', 'info');
-      const res = await api.post(`/facebook/pages/${id}/description/generate`);
+      ztteam_showToast('Đang tạo mô tả Fanpage bằng Google Gemini AI (100% tiếng Anh)...', 'info');
+      const activeTheme = brandingTheme === 'custom' ? customBrandingTheme.trim() : brandingTheme;
+      const res = await api.post(`/facebook/pages/${id}/description/generate`, {
+        theme: activeTheme || undefined
+      });
       if (res.data?.success && res.data.description) {
         setPageDescription(res.data.description);
         setBrandingData((prev: any) => ({
@@ -654,8 +662,12 @@ export default function FacebookPageSettings() {
     else setIsRegeneratingCover(true);
 
     try {
-      ztteam_showToast(`Đang vẽ lại ${type === 'avatar' ? 'Avatar (1:1)' : 'Ảnh bìa (16:9)'} qua Google Gemini AI...`, 'info');
-      const res = await api.post(`/facebook/pages/${id}/branding/regenerate-item`, { type });
+      ztteam_showToast(`Đang vẽ lại ${type === 'avatar' ? 'Avatar (1:1)' : 'Ảnh bìa (16:9)'} theo phong cách Muse.ai...`, 'info');
+      const activeTheme = brandingTheme === 'custom' ? customBrandingTheme.trim() : brandingTheme;
+      const res = await api.post(`/facebook/pages/${id}/branding/regenerate-item`, {
+        type,
+        theme: activeTheme || undefined
+      });
       if (res.data?.success) {
         setBrandingData((prev: any) => ({
           ...prev,
@@ -1822,6 +1834,61 @@ export default function FacebookPageSettings() {
                     </button>
                   )}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/** Theme & Artistic Style (Muse.ai) Card */}
+          <div className="bg-fb-surface rounded-2xl shadow-lg border border-fb-surface-hover/50 p-6 space-y-4">
+            <div className="flex items-start gap-3 pb-3 border-b border-fb-surface-hover/50">
+              <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-2xl">movie_filter</span>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-base font-black text-fb-text">Chủ Đề Nghệ Thuật Điện Ảnh (Muse.ai Style)</h4>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                    Chiaroscuro & Narrative Depth
+                  </span>
+                </div>
+                <p className="text-xs text-fb-text-muted mt-1 max-w-2xl leading-relaxed">
+                  Định hướng phong cách hình ảnh và mô tả theo phong cách Muse.ai: ánh sáng điện ảnh tương phản cao (chiaroscuro), chiều sâu biểu cảm nhân vật và không khí giàu tính tự sự.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-fb-text mb-2">
+                  Chọn chủ đề cốt truyện mẫu
+                </label>
+                <CustomDropdown
+                  value={brandingTheme}
+                  onChange={(val) => setBrandingTheme(String(val))}
+                  options={[
+                    { value: 'Family Drama & Confessions', label: 'Family Drama & Confessions (Kịch tính gia đình & Thú nhận)' },
+                    { value: 'Emotional Life & Healing', label: 'Emotional Life & Healing (Tâm sự cảm xúc & Chữa lành)' },
+                    { value: 'Heartwarming & True Miracles', label: 'Heartwarming & True Miracles (Kỳ diệu cuộc sống & Ấm áp)' },
+                    { value: 'Mystery, Secrets & Suspense', label: 'Mystery, Secrets & Suspense (Bí mật giấu kín & Ly kỳ)' },
+                    { value: 'Love, Marriage & Relationships', label: 'Love, Marriage & Relationships (Hôn nhân & Sóng gió tình cảm)' },
+                    { value: 'Daily Wisdom & Life Lessons', label: 'Daily Wisdom & Life Lessons (Triết lý sống & Bài học nhân sinh)' },
+                    { value: 'custom', label: 'Tùy chỉnh chủ đề riêng...' },
+                  ]}
+                  className="w-full"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-fb-text mb-2">
+                  {brandingTheme === 'custom' ? 'Nhập chủ đề tùy chỉnh (Bắt buộc)' : 'Tùy chỉnh chi tiết / Ý tưởng bổ sung (Tùy chọn)'}
+                </label>
+                <input
+                  type="text"
+                  value={customBrandingTheme}
+                  onChange={(e) => setCustomBrandingTheme(e.target.value)}
+                  placeholder={brandingTheme === 'custom' ? 'Ví dụ: Cyberpunk Detective Noir in Rainy Tokyo...' : 'Ví dụ: Tone màu ấm, góc quay cận cảnh ánh mắt...'}
+                  className="w-full bg-fb-surface-hover/60 border border-fb-surface-hover focus:border-cyan-500 rounded-xl px-4 py-2.5 text-xs text-fb-text focus:outline-none transition-colors"
+                />
               </div>
             </div>
           </div>
