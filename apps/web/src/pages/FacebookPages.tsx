@@ -1444,6 +1444,15 @@ export default function FacebookPages() {
                 <span className="material-symbols-outlined text-sm">description</span>
                 <span>Mô Tả Fanpage (English Bio)</span>
               </button>
+
+              <Link
+                to="/facebook/branding"
+                className="px-3 py-1 rounded-lg bg-gradient-to-r from-cyan-600/30 to-blue-600/30 hover:opacity-90 text-cyan-300 font-bold flex items-center gap-1.5 transition-colors border border-cyan-500/40"
+                title="Mở toàn màn hình Phân hệ Studio Nhận Diện & Bio Fanpage"
+              >
+                <span className="material-symbols-outlined text-sm">open_in_new</span>
+                <span>Mở Studio Nhận Diện & Bio</span>
+              </Link>
             </div>
           </div>
 

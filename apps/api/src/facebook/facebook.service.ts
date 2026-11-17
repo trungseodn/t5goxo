@@ -696,6 +696,7 @@ export class ZTTeamFacebookService {
         category: p.category,
         brandingAvatarUrl: (p as any).branding_avatar_url || null,
         brandingCoverUrl: (p as any).branding_cover_url || null,
+        brandingDescription: (p as any).branding_description || null,
         followersCount: p.follower_count,
         avatar: (p as any).branding_avatar_url || p.avatar,
         accountType: p.fb_account.business_id ? (p.fb_account.account_type || 'SYSTEM_USER') : 'PERSONAL',
