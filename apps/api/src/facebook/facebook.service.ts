@@ -3076,8 +3076,9 @@ export class ZTTeamFacebookService {
 
   /**
    * ZTTeam: Tạo riêng Mô tả Fanpage (Bio / About) bằng AI theo Chủ Đề (100% Tiếng Anh)
+   * Hỗ trợ chỉ định AI Provider (Gemini hoặc DeepSeek)
    */
-  async ztteam_generatePageDescription(internalPageId: string, theme?: string): Promise<{
+  async ztteam_generatePageDescription(internalPageId: string, theme?: string, aiProvider?: 'gemini' | 'deepseek'): Promise<{
     success: boolean;
     pageId: string;
     description: string;
@@ -3106,6 +3107,7 @@ export class ZTTeamFacebookService {
       tags: page.tags,
       recentTitles,
       theme,
+      aiProvider,
     });
 
     await this.prisma.ztteam_pages.update({
@@ -3640,8 +3642,9 @@ export class ZTTeamFacebookService {
     overwriteExisting?: boolean;
     pageIds?: string[];
     theme?: string;
+    aiProvider?: 'gemini' | 'deepseek';
   } = {}) {
-    const { limit = 100, overwriteExisting = false, pageIds, theme } = options;
+    const { limit = 100, overwriteExisting = false, pageIds, theme, aiProvider } = options;
 
     const whereClause: any = { is_active: true };
     if (pageIds && pageIds.length > 0) {
@@ -3656,7 +3659,7 @@ export class ZTTeamFacebookService {
       orderBy: { name: 'asc' },
     });
 
-    this.logger.log(`[Bio Batch] Bắt đầu tạo mô tả hàng loạt (100% tiếng Anh, chủ đề "${theme || 'Mặc định'}") cho ${pages.length} Fanpage (Limit: ${limit}, Overwrite: ${overwriteExisting})...`);
+    this.logger.log(`[Bio Batch] Bắt đầu tạo mô tả hàng loạt qua ${aiProvider || 'AI'} (100% tiếng Anh, chủ đề "${theme || 'Mặc định'}") cho ${pages.length} Fanpage (Limit: ${limit}, Overwrite: ${overwriteExisting})...`);
 
     const results: any[] = [];
     let processedCount = 0;
@@ -3675,8 +3678,8 @@ export class ZTTeamFacebookService {
       }
 
       try {
-        this.logger.log(`[Bio Batch] [${processedCount + 1}/${limit}] Đang tạo mô tả cho Page "${page.name}"...`);
-        const descRes = await this.ztteam_generatePageDescription(page.id, theme);
+        this.logger.log(`[Bio Batch] [${processedCount + 1}/${limit}] Đang tạo mô tả qua ${aiProvider || 'AI'} cho Page "${page.name}"...`);
+        const descRes = await this.ztteam_generatePageDescription(page.id, theme, aiProvider);
         results.push({
           pageId: page.id,
           name: page.name,

@@ -70,6 +70,9 @@ export default function BrandingStudio() {
   /** Tab điều hướng chính: 'branding' | 'bio' | 'category' */
   const [activeTab, setActiveTab] = useState<'branding' | 'bio' | 'category'>('branding');
 
+  /** Lựa chọn Engine AI tạo mô tả Fanpage: DeepSeek hoặc Gemini */
+  const [bioAiProvider, setBioAiProvider] = useState<'deepseek' | 'gemini'>('deepseek');
+
   /** Bộ lọc dữ liệu */
   const [filterBM, setFilterBM] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'no_images' | 'has_images' | 'no_bio' | 'has_bio'>('all');
@@ -364,23 +367,26 @@ export default function BrandingStudio() {
   // ==========================================
 
   /** Viết mô tả 100% tiếng Anh hàng loạt */
+  /** Tạo mô tả hàng loạt bằng DeepSeek / Gemini */
   const handleBatchGenerateBio = async () => {
     if (targetPageIds.length === 0) {
       ztteam_showToast('Vui lòng chọn ít nhất 1 Fanpage hoặc chọn Doanh Nghiệp (BM)', 'error');
       return;
     }
     const themeToSend = getEffectiveTheme();
+    const aiLabel = bioAiProvider === 'deepseek' ? 'DeepSeek AI' : 'Google Gemini';
     try {
       setIsProcessingBatch(true);
-      setBatchProgressMsg(`Gemini đang viết mô tả 100% tiếng Anh (chủ đề: ${themeToSend || 'Mặc định'}) cho ${targetPageIds.length} Fanpage...`);
+      setBatchProgressMsg(`${aiLabel} đang viết mô tả 100% tiếng Anh (chủ đề: ${themeToSend || 'Mặc định'}) cho ${targetPageIds.length} Fanpage...`);
       const res = await api.post('/facebook/pages/description/batch-generate', {
         pageIds: targetPageIds,
         overwriteExisting,
         theme: themeToSend || undefined,
+        aiProvider: bioAiProvider,
       });
       if (res.data?.success) {
-        ztteam_showToast(`Đã tạo xong mô tả tiếng Anh cho ${res.data.totalProcessed || 0} Fanpage!`, 'success');
-        setBatchProgressMsg(`Hoàn tất: Đã sinh mô tả cho ${res.data.totalProcessed || 0} Fanpage.`);
+        ztteam_showToast(`Đã tạo xong mô tả tiếng Anh (${aiLabel}) cho ${res.data.totalProcessed || 0} Fanpage!`, 'success');
+        setBatchProgressMsg(`Hoàn tất: Đã sinh mô tả qua ${aiLabel} cho ${res.data.totalProcessed || 0} Fanpage.`);
         await ztteam_fetchPagesFromDB();
       }
     } catch (err: any) {
@@ -422,19 +428,21 @@ export default function BrandingStudio() {
     }
   };
 
-  /** Viết lại mô tả tiếng Anh cho 1 page */
+  /** Viết lại mô tả tiếng Anh cho 1 page qua DeepSeek / Gemini */
   const handleSingleGenerateBio = async (page: ZTTeamFanpage) => {
     const pId = page.internalId || page.id;
+    const aiLabel = bioAiProvider === 'deepseek' ? 'DeepSeek AI' : 'Google Gemini';
     setLoadingPages(prev => ({ ...prev, [pId]: { ...prev[pId], bio: true } }));
     try {
-      ztteam_showToast(`Gemini đang viết mô tả 100% tiếng Anh cho "${page.name}"...`, 'info');
+      ztteam_showToast(`${aiLabel} đang viết mô tả 100% tiếng Anh cho "${page.name}"...`, 'info');
       const themeToSend = getEffectiveTheme();
       const res = await api.post(`/facebook/pages/${pId}/description/generate`, {
         theme: themeToSend || undefined,
+        aiProvider: bioAiProvider,
       });
       if (res.data?.success && res.data.description) {
         setEditedBios(prev => ({ ...prev, [pId]: res.data.description }));
-        ztteam_showToast(`Đã tạo xong mô tả tiếng Anh cho "${page.name}"!`, 'success');
+        ztteam_showToast(`Đã tạo xong mô tả tiếng Anh (${aiLabel}) cho "${page.name}"!`, 'success');
         await ztteam_fetchPagesFromDB();
       }
     } catch (err: any) {
@@ -764,12 +772,12 @@ export default function BrandingStudio() {
                   {isProcessingBatch ? (
                     <>
                       <span className="material-symbols-outlined animate-spin text-sm">sync</span>
-                      <span>Gemini Đang Viết ({targetPages.length} Page)...</span>
+                      <span>{bioAiProvider === 'deepseek' ? 'DeepSeek' : 'Gemini'} Đang Viết ({targetPages.length} Page)...</span>
                     </>
                   ) : (
                     <>
                       <span className="material-symbols-outlined text-sm">auto_awesome</span>
-                      <span>Viết Mô Tả Hàng Loạt (Tiếng Anh)</span>
+                      <span>Viết Mô Tả ({bioAiProvider === 'deepseek' ? 'DeepSeek' : 'Gemini'}) Hàng Loạt</span>
                     </>
                   )}
                 </button>
@@ -1163,12 +1171,47 @@ export default function BrandingStudio() {
       {/** TAB 2: INTERACTIVE TABLE - TÁC VỤ RIÊNG BIỆT: MÔ TẢ FANPAGE (100% TIẾNG ANH) */}
       {activeTab === 'bio' && (
         <div className="bg-fb-surface rounded-2xl border border-fb-surface-hover/60 shadow-xl overflow-hidden space-y-4 p-5">
-          <div className="flex items-center justify-between text-xs text-fb-text-muted pb-2 border-b border-fb-surface-hover/50">
-            <div>
-              Hiển thị: <b>{filteredPages.length}</b> Fanpage • Đang chọn: <b className="text-teal-400">{selectedPageIds.length}</b> Fanpage
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-fb-text-muted pb-3 border-b border-fb-surface-hover/50">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-bold text-fb-text flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[17px] text-teal-400">psychology</span>
+                <span>Engine AI Tạo Mô Tả:</span>
+              </span>
+              <div className="inline-flex p-0.5 rounded-xl bg-fb-surface-hover/60 border border-fb-surface-hover/80">
+                <button
+                  type="button"
+                  onClick={() => setBioAiProvider('deepseek')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                    bioAiProvider === 'deepseek'
+                      ? 'bg-blue-600/30 text-blue-300 border border-blue-500/50 shadow-sm'
+                      : 'text-fb-text-muted hover:text-fb-text'
+                  }`}
+                  title="Sử dụng DeepSeek AI (deepseek-chat) tối ưu ngữ nghĩa tiếng Anh"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-cyan-400">smart_toy</span>
+                  <span>DeepSeek AI</span>
+                  <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Khuyên dùng</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBioAiProvider('gemini')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                    bioAiProvider === 'gemini'
+                      ? 'bg-blue-600/30 text-blue-300 border border-blue-500/50 shadow-sm'
+                      : 'text-fb-text-muted hover:text-fb-text'
+                  }`}
+                  title="Sử dụng Google Gemini AI"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-amber-400">auto_awesome</span>
+                  <span>Google Gemini</span>
+                </button>
+              </div>
             </div>
-            <div className="text-[11px] text-teal-400">
-              * Khuyến nghị Facebook Bio: 120 – 220 ký tự, 100% tiếng Anh, không chứa dấu ngoặc kép.
+
+            <div className="text-[11px] text-teal-400 flex items-center gap-2">
+              <span>Hiển thị: <b>{filteredPages.length}</b> • Đang chọn: <b className="text-teal-300">{selectedPageIds.length}</b> Page</span>
+              <span>•</span>
+              <span>120 – 220 ký tự (100% English Bio)</span>
             </div>
           </div>
 
@@ -1278,14 +1321,14 @@ export default function BrandingStudio() {
                             onClick={() => handleSingleGenerateBio(page)}
                             disabled={pLoading.bio}
                             className="px-3 py-1.5 rounded-lg bg-teal-600/20 hover:bg-teal-600/30 text-teal-300 text-xs font-bold border border-teal-500/40 flex items-center gap-1.5 transition-all disabled:opacity-50 w-full justify-center"
-                            title="Tạo mới mô tả bằng Gemini AI theo chủ đề"
+                            title={`Tạo mới mô tả bằng ${bioAiProvider === 'deepseek' ? 'DeepSeek AI' : 'Google Gemini'} theo chủ đề`}
                           >
                             {pLoading.bio ? (
                               <span className="material-symbols-outlined animate-spin text-sm">sync</span>
                             ) : (
                               <span className="material-symbols-outlined text-sm">auto_awesome</span>
                             )}
-                            <span>Viết Bằng AI</span>
+                            <span>Viết Bằng {bioAiProvider === 'deepseek' ? 'DeepSeek' : 'Gemini'}</span>
                           </button>
 
                           <button

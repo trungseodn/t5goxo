@@ -1063,6 +1063,7 @@ Story Details:
 
   /**
    * ZTTeam: Tạo mô tả Fanpage (Bio / About) thu hút, tự nhiên và chuyên nghiệp bằng AI (100% TIẾNG ANH THEO CHỦ ĐỀ)
+   * Hỗ trợ linh hoạt Google Gemini và DeepSeek AI
    */
   async ztteam_generatePageDescription(params: {
     pageName: string;
@@ -1071,8 +1072,9 @@ Story Details:
     tags?: string[];
     recentTitles?: string[];
     theme?: string | null;
+    aiProvider?: 'gemini' | 'deepseek';
   }): Promise<string> {
-    const { pageName, category, tags, recentTitles, theme } = params;
+    const { pageName, category, tags, recentTitles, theme, aiProvider } = params;
     const themeText = theme && theme.trim().length > 0 ? `Theme / Niche: ${theme}.` : '';
     const catText = category ? `Category: ${category}.` : '';
     const tagsText = tags && tags.length > 0 ? `Tags: ${tags.join(', ')}.` : '';
@@ -1092,13 +1094,68 @@ CRITICAL REQUIREMENTS:
 - DO NOT use quotation marks, hashtags, emojis, or markdown formatting. Output plain text only.`;
 
     const settings = await this.getSettings();
-    try {
-      if (settings.geminiKey) {
+    const targetProvider = aiProvider || (settings.activeProvider === 'deepseek' ? 'deepseek' : (settings.activeProvider === 'gemini' ? 'gemini' : 'deepseek'));
+
+    // 1. Ưu tiên DeepSeek nếu được chỉ định hoặc là active provider
+    if (targetProvider === 'deepseek' && settings.deepseekKey) {
+      try {
+        const OpenAI = require('openai').default;
+        const deepseek = new OpenAI({
+          apiKey: settings.deepseekKey.trim(),
+          baseURL: 'https://api.deepseek.com',
+        });
+        const comp = await deepseek.chat.completions.create({
+          model: 'deepseek-chat',
+          messages: [{ role: 'user', content: promptText }],
+          temperature: 0.7,
+          max_tokens: 150,
+        });
+        const clean = (comp.choices?.[0]?.message?.content || '').replace(/^["']|["']$/g, '').trim();
+        if (clean) {
+          this.logger.log(`[DeepSeek Bio] Tạo mô tả thành công cho "${pageName}" (${clean.length} ký tự)`);
+          return clean;
+        }
+      } catch (dsErr: any) {
+        this.logger.warn(`[DeepSeek Bio] Lỗi tạo mô tả qua DeepSeek: ${dsErr.message}`);
+      }
+    }
+
+    // 2. Thử Gemini nếu được chỉ định hoặc fallback
+    if (settings.geminiKey) {
+      try {
         const res = await this.ztteam_callGeminiWithFallback(settings.geminiKey, promptText, { temperature: 0.8 });
         const clean = (res || '').replace(/^["']|["']$/g, '').trim();
-        if (clean) return clean;
+        if (clean) {
+          this.logger.log(`[Gemini Bio] Tạo mô tả thành công cho "${pageName}" (${clean.length} ký tự)`);
+          return clean;
+        }
+      } catch (gemErr: any) {
+        this.logger.warn(`[Gemini Bio] Lỗi tạo mô tả qua Gemini: ${gemErr.message}`);
       }
-      if (settings.openaiKey) {
+    }
+
+    // 3. Fallback sang DeepSeek nếu trước đó chọn Gemini nhưng Gemini lỗi
+    if (targetProvider !== 'deepseek' && settings.deepseekKey) {
+      try {
+        const OpenAI = require('openai').default;
+        const deepseek = new OpenAI({
+          apiKey: settings.deepseekKey.trim(),
+          baseURL: 'https://api.deepseek.com',
+        });
+        const comp = await deepseek.chat.completions.create({
+          model: 'deepseek-chat',
+          messages: [{ role: 'user', content: promptText }],
+          temperature: 0.7,
+          max_tokens: 150,
+        });
+        const clean = (comp.choices?.[0]?.message?.content || '').replace(/^["']|["']$/g, '').trim();
+        if (clean) return clean;
+      } catch (e: any) {}
+    }
+
+    // 4. Fallback OpenAI (nếu có key)
+    if (settings.openaiKey) {
+      try {
         const OpenAI = require('openai').default;
         const openai = new OpenAI({ apiKey: settings.openaiKey.trim() });
         const comp = await openai.chat.completions.create({
@@ -1109,9 +1166,7 @@ CRITICAL REQUIREMENTS:
         });
         const clean = (comp.choices?.[0]?.message?.content || '').replace(/^["']|["']$/g, '').trim();
         if (clean) return clean;
-      }
-    } catch (e: any) {
-      this.logger.warn(`AI description generation failed: ${e.message}`);
+      } catch (e: any) {}
     }
 
     return `Welcome to ${pageName}! Your daily destination for emotional stories, heartfelt life lessons, and inspiring journeys. Follow us to never miss a moment!`;

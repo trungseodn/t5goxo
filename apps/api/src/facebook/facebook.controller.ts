@@ -225,9 +225,9 @@ export class ZTTeamFacebookController {
   @Post('pages/:pageId/description/generate')
   ztteam_generateDescription(
     @Param('pageId') pageId: string,
-    @Body('theme') theme?: string
+    @Body() body: { theme?: string; aiProvider?: 'gemini' | 'deepseek' } = {}
   ) {
-    return this.facebookService.ztteam_generatePageDescription(pageId, theme);
+    return this.facebookService.ztteam_generatePageDescription(pageId, body.theme, body.aiProvider);
   }
 
   @Post('pages/:pageId/description/update')
@@ -240,7 +240,7 @@ export class ZTTeamFacebookController {
 
   @Post('pages/description/batch-generate')
   ztteam_batchGenerateDescriptions(
-    @Body() body: { limit?: number; overwriteExisting?: boolean; pageIds?: string[]; theme?: string }
+    @Body() body: { limit?: number; overwriteExisting?: boolean; pageIds?: string[]; theme?: string; aiProvider?: 'gemini' | 'deepseek' }
   ) {
     return this.facebookService.ztteam_batchGenerateDescriptions(body || {});
   }
