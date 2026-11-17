@@ -697,6 +697,9 @@ export class ZTTeamFacebookService {
         brandingAvatarUrl: (p as any).branding_avatar_url || null,
         brandingCoverUrl: (p as any).branding_cover_url || null,
         brandingDescription: (p as any).branding_description || null,
+        brandingStatus: (p as any).branding_status || 'NONE',
+        brandingTarget: (p as any).branding_target || 'both',
+        brandingErrorLog: (p as any).branding_error_log || null,
         followersCount: p.follower_count,
         avatar: (p as any).branding_avatar_url || p.avatar,
         accountType: p.fb_account.business_id ? (p.fb_account.account_type || 'SYSTEM_USER') : 'PERSONAL',
@@ -3773,5 +3776,308 @@ export class ZTTeamFacebookService {
       failCount,
       results,
     };
+  }
+
+  /**
+   * ZTTeam: Đưa Fanpage vào Hàng Đợi vẽ ảnh cho Muse.ai Worker
+   */
+  async ztteam_enqueueMuseBranding(options: {
+    pageIds?: string[];
+    theme?: string;
+    target?: 'both' | 'avatar' | 'cover';
+    overwriteExisting?: boolean;
+  }) {
+    const { pageIds, theme, target = 'both', overwriteExisting = false } = options;
+
+    const whereClause: any = { is_active: true };
+    if (pageIds && pageIds.length > 0) {
+      whereClause.OR = [
+        { id: { in: pageIds } },
+        { fb_page_id: { in: pageIds } }
+      ];
+    }
+
+    const pages = await this.prisma.ztteam_pages.findMany({
+      where: whereClause,
+      include: {
+        sources: { where: { is_active: true } }
+      }
+    });
+
+    this.logger.log(`[Muse Branding Queue] Đang đưa ${pages.length} Fanpage vào hàng đợi vẽ ảnh cho Muse.ai (Chủ đề: ${theme || 'Mặc định'}, Target: ${target})...`);
+
+    let enqueuedCount = 0;
+    const results: any[] = [];
+
+    for (const page of pages) {
+      const hasAvatar = !!(page as any).branding_avatar_url;
+      const hasCover = !!(page as any).branding_cover_url;
+
+      if (!overwriteExisting) {
+        if (target === 'avatar' && hasAvatar) {
+          results.push({ pageId: page.id, name: page.name, status: 'SKIPPED', message: 'Đã có Avatar' });
+          continue;
+        }
+        if (target === 'cover' && hasCover) {
+          results.push({ pageId: page.id, name: page.name, status: 'SKIPPED', message: 'Đã có Ảnh bìa' });
+          continue;
+        }
+        if (target === 'both' && hasAvatar && hasCover) {
+          results.push({ pageId: page.id, name: page.name, status: 'SKIPPED', message: 'Đã đủ cả Avatar & Bìa' });
+          continue;
+        }
+      }
+
+      // Tạo Prompt chuẩn xác cho Muse.ai
+      let connectedSite: string | null = null;
+      if (page.sources && page.sources.length > 0 && page.sources[0].target_site_id) {
+        const site = await this.prisma.ztteam_target_sites.findUnique({
+          where: { id: page.sources[0].target_site_id }
+        });
+        connectedSite = site?.wp_url || null;
+      }
+      const recentImages = await this.prisma.ztteam_images.findMany({
+        where: { page_id: page.id },
+        orderBy: { created_at: 'desc' },
+        take: 3,
+        select: { wp_post_title: true }
+      });
+      const recentTitles = recentImages.map(i => i.wp_post_title).filter(Boolean);
+
+      const prompts = await this.aiService.ztteam_generateBrandingPrompts({
+        pageName: page.name,
+        category: page.category,
+        siteUrl: connectedSite,
+        tags: page.tags,
+        recentTitles,
+        theme,
+      });
+
+      await this.prisma.ztteam_pages.update({
+        where: { id: page.id },
+        data: {
+          branding_avatar_prompt: prompts.avatarPrompt,
+          branding_cover_prompt: prompts.coverPrompt,
+          branding_status: 'PENDING',
+          branding_target: target,
+          branding_error_log: null,
+          branding_updated_at: new Date(),
+        } as any
+      });
+
+      enqueuedCount++;
+      results.push({ pageId: page.id, name: page.name, status: 'ENQUEUED' });
+    }
+
+    return {
+      success: true,
+      totalRequested: pages.length,
+      enqueuedCount,
+      results,
+    };
+  }
+
+  /**
+   * ZTTeam: Lấy job vẽ ảnh tiếp theo đang PENDING cho Muse.ai Worker
+   */
+  async ztteam_getPendingMuseBrandingJob(): Promise<{
+    hasJob: boolean;
+    job?: {
+      id: string;
+      pageId: string;
+      pageName: string;
+      type: 'avatar' | 'cover';
+      prompt: string;
+      aspectRatio: '1:1' | '16:9';
+    };
+  }> {
+    // 0. Tự động giải phóng các job PROCESSING bị kẹt quá 15 phút
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    await this.prisma.ztteam_pages.updateMany({
+      where: {
+        branding_status: 'PROCESSING',
+        branding_updated_at: { lt: fifteenMinutesAgo },
+      } as any,
+      data: {
+        branding_status: 'PENDING',
+      } as any
+    });
+
+    // 1. Lấy 1 page đang PENDING
+    const page = await this.prisma.ztteam_pages.findFirst({
+      where: {
+        branding_status: 'PENDING',
+        is_active: true,
+      } as any,
+      orderBy: { branding_updated_at: 'asc' } as any,
+    });
+
+    if (!page) {
+      return { hasJob: false };
+    }
+
+    const target = (page as any).branding_target || 'both';
+    const hasAvatar = !!(page as any).branding_avatar_url;
+    const hasCover = !!(page as any).branding_cover_url;
+
+    let type: 'avatar' | 'cover' = 'avatar';
+    let prompt = (page as any).branding_avatar_prompt || '';
+    let aspectRatio: '1:1' | '16:9' = '1:1';
+
+    if (target === 'cover' || (target === 'both' && hasAvatar && !hasCover)) {
+      type = 'cover';
+      prompt = (page as any).branding_cover_prompt || '';
+      aspectRatio = '16:9';
+    } else {
+      type = 'avatar';
+      prompt = (page as any).branding_avatar_prompt || '';
+      aspectRatio = '1:1';
+    }
+
+    // Đánh dấu PROCESSING
+    await this.prisma.ztteam_pages.update({
+      where: { id: page.id },
+      data: {
+        branding_status: 'PROCESSING',
+        branding_updated_at: new Date(),
+      } as any
+    });
+
+    return {
+      hasJob: true,
+      job: {
+        id: `${page.id}_${type}`,
+        pageId: page.id,
+        pageName: page.name,
+        type,
+        prompt,
+        aspectRatio,
+      }
+    };
+  }
+
+  /**
+   * ZTTeam: Upload ảnh do Muse.ai Worker vừa vẽ xong lên hệ thống và gắn vào Fanpage
+   */
+  async ztteam_uploadMuseBrandingImage(
+    internalPageId: string,
+    file: any,
+    type: 'avatar' | 'cover',
+    autoApply: boolean = true
+  ) {
+    if (!file) {
+      throw new BadRequestException('Không tìm thấy file ảnh');
+    }
+
+    const page = await this.prisma.ztteam_pages.findFirst({
+      where: {
+        OR: [{ id: internalPageId }, { fb_page_id: internalPageId }]
+      }
+    });
+
+    if (!page) {
+      throw new BadRequestException('Fanpage không tồn tại');
+    }
+
+    const imageUrl = `/storage/branding/${file.filename}`;
+    const localPath = file.path;
+
+    const updateData: any = {
+      branding_updated_at: new Date(),
+    };
+
+    if (type === 'avatar') {
+      updateData.avatar = imageUrl;
+      updateData.branding_avatar_url = imageUrl;
+    } else {
+      updateData.cover_url = imageUrl;
+      updateData.branding_cover_url = imageUrl;
+    }
+
+    // Kiểm tra xem đã hoàn thành toàn bộ chưa
+    const target = (page as any).branding_target || 'both';
+    const willHaveAvatar = type === 'avatar' ? true : !!(page as any).branding_avatar_url;
+    const willHaveCover = type === 'cover' ? true : !!(page as any).branding_cover_url;
+
+    if (target === 'avatar' && willHaveAvatar) {
+      updateData.branding_status = 'COMPLETED';
+    } else if (target === 'cover' && willHaveCover) {
+      updateData.branding_status = 'COMPLETED';
+    } else if (target === 'both') {
+      if (willHaveAvatar && willHaveCover) {
+        updateData.branding_status = 'COMPLETED';
+      } else {
+        // Vẫn còn 1 ảnh nữa (Cover hoặc Avatar), giữ PENDING để worker làm tiếp
+        updateData.branding_status = 'PENDING';
+      }
+    }
+
+    await this.prisma.ztteam_pages.update({
+      where: { id: page.id },
+      data: updateData
+    });
+
+    // Nếu autoApply = true: Tự động đồng bộ lên Facebook Graph API ngay lập tức
+    let appliedToFacebook = false;
+    let applyError = null;
+    if (autoApply) {
+      try {
+        if (type === 'avatar') {
+          await this.ztteam_applyPageBranding(page.id, {
+            avatarUrl: imageUrl,
+            avatarLocalPath: localPath,
+          });
+        } else {
+          await this.ztteam_applyPageBranding(page.id, {
+            coverUrl: imageUrl,
+            coverLocalPath: localPath,
+          });
+        }
+        appliedToFacebook = true;
+      } catch (err: any) {
+        applyError = err.message;
+        this.logger.warn(`[Muse Auto-Apply] Lỗi đồng bộ lên Facebook: ${err.message}`);
+      }
+    }
+
+    return {
+      success: true,
+      pageId: page.id,
+      type,
+      imageUrl,
+      brandingStatus: updateData.branding_status || 'PENDING',
+      appliedToFacebook,
+      applyError,
+    };
+  }
+
+  /**
+   * ZTTeam: Cập nhật trạng thái Muse Branding Job khi gặp lỗi
+   */
+  async ztteam_updateMuseBrandingStatus(
+    internalPageId: string,
+    status: 'PROCESSING' | 'COMPLETED' | 'FAILED',
+    error?: string
+  ) {
+    const page = await this.prisma.ztteam_pages.findFirst({
+      where: {
+        OR: [{ id: internalPageId }, { fb_page_id: internalPageId }]
+      }
+    });
+
+    if (!page) {
+      throw new BadRequestException('Fanpage không tồn tại');
+    }
+
+    await this.prisma.ztteam_pages.update({
+      where: { id: page.id },
+      data: {
+        branding_status: status,
+        branding_error_log: error || null,
+        branding_updated_at: new Date(),
+      } as any
+    });
+
+    return { success: true };
   }
 }

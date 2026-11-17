@@ -44,6 +44,9 @@ export interface ZTTeamFanpage {
   brandingAvatarUrl?: string | null;
   brandingCoverUrl?: string | null;
   brandingDescription?: string | null;
+  brandingStatus?: 'NONE' | 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  brandingTarget?: string | null;
+  brandingErrorLog?: string | null;
 }
 
 interface ZTTeamFacebookState {

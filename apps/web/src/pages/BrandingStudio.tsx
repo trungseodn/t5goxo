@@ -74,8 +74,9 @@ export default function BrandingStudio() {
   const [bioAiProvider, setBioAiProvider] = useState<'deepseek' | 'gemini'>('deepseek');
 
   /** Bộ lọc dữ liệu */
+  type FilterStatusType = 'all' | 'missing_cover' | 'missing_avatar' | 'missing_both_images' | 'missing_bio' | 'incomplete_any' | 'completed_all' | 'muse_pending' | 'muse_processing';
   const [filterBM, setFilterBM] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'no_images' | 'has_images' | 'no_bio' | 'has_bio'>('all');
+  const [filterStatus, setFilterStatus] = useState<FilterStatusType>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
 
@@ -89,6 +90,9 @@ export default function BrandingStudio() {
   const [overwriteExisting, setOverwriteExisting] = useState<boolean>(false);
   const [isProcessingBatch, setIsProcessingBatch] = useState<boolean>(false);
   const [batchProgressMsg, setBatchProgressMsg] = useState<string | null>(null);
+
+  /** Cấu hình mục tiêu vẽ ảnh cho Muse.ai (Cả bộ, chỉ Avatar hoặc chỉ Ảnh bìa) */
+  const [museTargetType, setMuseTargetType] = useState<'both' | 'avatar' | 'cover'>('both');
 
   /** State riêng cho từng Page (đang tạo / đang lưu) */
   const [loadingPages, setLoadingPages] = useState<Record<string, { avatar?: boolean; cover?: boolean; both?: boolean; bio?: boolean; apply?: boolean }>>({});
@@ -126,20 +130,34 @@ export default function BrandingStudio() {
     setEditedBios(prev => ({ ...bios, ...prev }));
   }, [pages]);
 
+  /** Hàm kiểm tra chi tiết trạng thái Nhận diện & Bio của 1 Fanpage */
+  const getPageStatusFlags = (p: ZTTeamFanpage) => {
+    const pId = p.internalId || p.id;
+    const hasAvatar = !!(p.brandingAvatarUrl || (p as any).branding_avatar_url || p.avatar);
+    const hasCover = !!(p.brandingCoverUrl || (p as any).branding_cover_url || (p as any).cover_url);
+    const hasBio = !!((p as any).brandingDescription || (p as any).branding_description || editedBios[pId]?.trim());
+    const isCompleted = hasAvatar && hasCover && hasBio;
+    const isIncomplete = !hasAvatar || !hasCover || !hasBio;
+    const museStatus = (p as any).brandingStatus || (p as any).branding_status || 'NONE';
+    return { hasAvatar, hasCover, hasBio, isCompleted, isIncomplete, museStatus };
+  };
+
   /** Lọc danh sách Fanpage */
   const filteredPages = useMemo(() => {
     return pages.filter(p => {
       if (p.isActive === false) return false;
       if (filterBM && p.businessName !== filterBM) return false;
 
-      const hasAvatar = !!(p as any).brandingAvatarUrl || !!(p as any).branding_avatar_url;
-      const hasCover = !!(p as any).brandingCoverUrl || !!(p as any).branding_cover_url;
-      const hasBio = !!((p as any).brandingDescription || (p as any).branding_description || editedBios[p.internalId || p.id]);
+      const { hasAvatar, hasCover, hasBio, isCompleted, isIncomplete, museStatus } = getPageStatusFlags(p);
 
-      if (filterStatus === 'no_images' && hasAvatar && hasCover) return false;
-      if (filterStatus === 'has_images' && (!hasAvatar || !hasCover)) return false;
-      if (filterStatus === 'no_bio' && hasBio) return false;
-      if (filterStatus === 'has_bio' && !hasBio) return false;
+      if (filterStatus === 'missing_avatar' && hasAvatar) return false;
+      if (filterStatus === 'missing_cover' && hasCover) return false;
+      if (filterStatus === 'missing_both_images' && (hasAvatar || hasCover)) return false;
+      if (filterStatus === 'missing_bio' && hasBio) return false;
+      if (filterStatus === 'incomplete_any' && !isIncomplete) return false;
+      if (filterStatus === 'completed_all' && !isCompleted) return false;
+      if (filterStatus === 'muse_pending' && museStatus !== 'PENDING') return false;
+      if (filterStatus === 'muse_processing' && museStatus !== 'PROCESSING') return false;
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
@@ -165,21 +183,44 @@ export default function BrandingStudio() {
     return targetPages.map(p => p.internalId || p.id);
   }, [targetPages]);
 
-  /** Thống kê nhanh */
+  /** Thống kê chi tiết nhận diện của toàn bộ Fanpage */
   const stats = useMemo(() => {
-    const total = pages.filter(p => p.isActive !== false).length;
-    let hasImages = 0;
-    let hasBio = 0;
-    pages.forEach(p => {
-      if (p.isActive === false) return;
-      const a = (p as any).brandingAvatarUrl || (p as any).branding_avatar_url;
-      const c = (p as any).brandingCoverUrl || (p as any).branding_cover_url;
-      const b = (p as any).brandingDescription || (p as any).branding_description;
-      if (a && c) hasImages++;
-      if (b) hasBio++;
+    const activePages = pages.filter(p => p.isActive !== false);
+    const total = activePages.length;
+    let missingAvatar = 0;
+    let missingCover = 0;
+    let missingBothImages = 0;
+    let missingBio = 0;
+    let incompleteAny = 0;
+    let completedAll = 0;
+    let musePending = 0;
+    let museProcessing = 0;
+
+    activePages.forEach(p => {
+      const { hasAvatar, hasCover, hasBio, isCompleted, isIncomplete, museStatus } = getPageStatusFlags(p);
+      if (!hasAvatar) missingAvatar++;
+      if (!hasCover) missingCover++;
+      if (!hasAvatar && !hasCover) missingBothImages++;
+      if (!hasBio) missingBio++;
+      if (isIncomplete) incompleteAny++;
+      if (isCompleted) completedAll++;
+      if (museStatus === 'PENDING') musePending++;
+      if (museStatus === 'PROCESSING') museProcessing++;
     });
-    return { total, hasImages, hasBio, selected: selectedPageIds.length };
-  }, [pages, selectedPageIds]);
+
+    return {
+      total,
+      missingAvatar,
+      missingCover,
+      missingBothImages,
+      missingBio,
+      incompleteAny,
+      completedAll,
+      musePending,
+      museProcessing,
+      selected: selectedPageIds.length,
+    };
+  }, [pages, selectedPageIds, editedBios]);
 
   /** Toggle chọn tất cả */
   const handleToggleSelectAll = () => {
@@ -297,6 +338,38 @@ export default function BrandingStudio() {
       ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi khi vẽ lại ảnh AI', 'error');
     } finally {
       setLoadingPages(prev => ({ ...prev, [pId]: { ...prev[pId], [type]: false } }));
+    }
+  };
+
+  /** Đưa Fanpage vào hàng đợi Muse.ai Worker vẽ ảnh (Phương án 1) */
+  const handleEnqueueMuseBranding = async (singlePageId?: string) => {
+    const ids = singlePageId ? [singlePageId] : targetPageIds;
+    if (ids.length === 0) {
+      ztteam_showToast('Vui lòng chọn ít nhất 1 Fanpage hoặc chọn Doanh Nghiệp (BM)', 'error');
+      return;
+    }
+
+    const themeToSend = getEffectiveTheme();
+    try {
+      setIsProcessingBatch(true);
+      setBatchProgressMsg(`Đang khởi tạo prompt và đưa ${ids.length} Fanpage vào hàng đợi Muse.ai (${museTargetType === 'both' ? 'Cả bộ' : museTargetType === 'avatar' ? 'Chỉ Avatar' : 'Chỉ Ảnh bìa'})...`);
+      const res = await api.post('/facebook/pages/branding/muse/enqueue', {
+        pageIds: ids,
+        theme: themeToSend || undefined,
+        target: museTargetType,
+        overwriteExisting,
+      });
+
+      if (res.data?.success) {
+        ztteam_showToast(`Đã đưa ${res.data.enqueuedCount || 0} Fanpage vào hàng đợi Muse.ai! Hãy bật start_muse_branding_worker.bat để vẽ.`, 'success');
+        setBatchProgressMsg(`Hoàn tất: Đã xếp ${res.data.enqueuedCount || 0} Fanpage vào hàng đợi Muse.ai.`);
+        await ztteam_fetchPagesFromDB();
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi đưa vào hàng đợi Muse.ai', 'error');
+      setBatchProgressMsg(null);
+    } finally {
+      setIsProcessingBatch(false);
     }
   };
 
@@ -601,7 +674,7 @@ export default function BrandingStudio() {
           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
             activeTab === 'branding' ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'bg-fb-surface-hover text-fb-text border-white/5'
           }`}>
-            Gemini 2K
+            Muse.ai RPA
           </span>
         </button>
 
@@ -618,7 +691,7 @@ export default function BrandingStudio() {
           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
             activeTab === 'bio' ? 'bg-teal-500/20 text-teal-400 border-teal-500/30' : 'bg-fb-surface-hover text-fb-text border-white/5'
           }`}>
-            English Bio
+            DeepSeek / Gemini
           </span>
         </button>
 
@@ -636,66 +709,179 @@ export default function BrandingStudio() {
       </div>
 
       {/** BỘ LỌC DỮ LIỆU & THANH TÌM KIẾM CHUNG */}
-      <div className="bg-fb-surface rounded-2xl p-4 border border-fb-surface-hover/50 shadow-md flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          {/** Lọc theo BM */}
-          <div className="w-56">
-            <CustomDropdown
-              value={filterBM}
-              onChange={(val) => setFilterBM(String(val))}
-              options={[
-                { value: '', label: '-- Tất cả Doanh Nghiệp (BM) --' },
-                ...uniqueBusinesses.map(b => ({ value: b, label: b })),
-              ]}
-              className="w-full text-xs"
-            />
+      <div className="bg-fb-surface rounded-2xl p-4 border border-fb-surface-hover/50 shadow-md space-y-3">
+        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {/** Lọc theo BM */}
+            <div className="w-56">
+              <CustomDropdown
+                value={filterBM}
+                onChange={(val) => setFilterBM(String(val))}
+                options={[
+                  { value: '', label: '-- Tất cả Doanh Nghiệp (BM) --' },
+                  ...uniqueBusinesses.map(b => ({ value: b, label: b })),
+                ]}
+                className="w-full text-xs"
+              />
+            </div>
+
+            {/** Lọc theo trạng thái */}
+            <div className="w-64">
+              <CustomDropdown
+                value={filterStatus}
+                onChange={(val) => setFilterStatus(val as any)}
+                options={[
+                  { value: 'all', label: `Tất cả Fanpage (${stats.total})` },
+                  { value: 'missing_cover', label: `Chưa có Ảnh Bìa (${stats.missingCover})` },
+                  { value: 'missing_avatar', label: `Chưa có Avatar (${stats.missingAvatar})` },
+                  { value: 'missing_both_images', label: `Chưa có Cả Avatar & Bìa (${stats.missingBothImages})` },
+                  { value: 'missing_bio', label: `Chưa có Mô tả Bio (${stats.missingBio})` },
+                  { value: 'incomplete_any', label: `Chưa hoàn thiện (${stats.incompleteAny})` },
+                  { value: 'completed_all', label: `Đã hoàn thiện đầy đủ (${stats.completedAll})` },
+                ]}
+                className="w-full text-xs"
+              />
+            </div>
+
+            {/** Nút chọn tất cả */}
+            <button
+              type="button"
+              onClick={handleToggleSelectAll}
+              className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 ${
+                selectedPageIds.length > 0 && selectedPageIds.length === filteredPages.length
+                  ? 'bg-blue-600/20 text-blue-300 border-blue-500/40'
+                  : 'bg-fb-surface-hover/40 text-fb-text-muted hover:text-fb-text border-fb-surface-hover'
+              }`}
+            >
+              <span className="material-symbols-outlined text-sm">
+                {selectedPageIds.length > 0 && selectedPageIds.length === filteredPages.length ? 'check_box' : 'check_box_outline_blank'}
+              </span>
+              <span>
+                {selectedPageIds.length > 0 && selectedPageIds.length === filteredPages.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả'} ({filteredPages.length})
+              </span>
+            </button>
           </div>
 
-          {/** Lọc theo trạng thái */}
-          <div className="w-56">
-            <CustomDropdown
-              value={filterStatus}
-              onChange={(val) => setFilterStatus(val as any)}
-              options={[
-                { value: 'all', label: 'Tất cả trạng thái' },
-                { value: 'no_images', label: 'Chưa đủ Ảnh Bìa / Avatar' },
-                { value: 'has_images', label: 'Đã có đủ Ảnh Bìa & Avatar' },
-                { value: 'no_bio', label: 'Chưa có Mô tả (Bio)' },
-                { value: 'has_bio', label: 'Đã có Mô tả (Bio)' },
-              ]}
-              className="w-full text-xs"
+          {/** Ô tìm kiếm */}
+          <div className="relative w-full md:w-72">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Tìm theo tên hoặc ID Fanpage..."
+              className="w-full bg-fb-surface-hover/50 border border-fb-surface-hover focus:border-cyan-500 rounded-xl pl-9 pr-4 py-2 text-xs text-fb-text placeholder-fb-text-muted focus:outline-none transition-colors"
             />
+            <span className="material-symbols-outlined absolute left-2.5 top-2.5 text-fb-text-muted text-base pointer-events-none">
+              search
+            </span>
           </div>
-
-          {/** Nút chọn tất cả */}
-          <button
-            type="button"
-            onClick={handleToggleSelectAll}
-            className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 ${
-              selectedPageIds.length > 0 && selectedPageIds.length === filteredPages.length
-                ? 'bg-blue-600/20 text-blue-300 border-blue-500/40'
-                : 'bg-fb-surface-hover/40 text-fb-text-muted hover:text-fb-text border-fb-surface-hover'
-            }`}
-          >
-            <span className="material-symbols-outlined text-sm">
-              {selectedPageIds.length > 0 && selectedPageIds.length === filteredPages.length ? 'check_box' : 'check_box_outline_blank'}
-            </span>
-            <span>
-              {selectedPageIds.length > 0 && selectedPageIds.length === filteredPages.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả'} ({filteredPages.length})
-            </span>
-          </button>
         </div>
 
-        {/** Ô tìm kiếm */}
-        <div className="relative w-full md:w-72">
-          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-fb-text-muted text-lg">search</span>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Tìm theo tên hoặc ID Page..."
-            className="w-full bg-fb-surface-hover/60 border border-fb-surface-hover focus:border-cyan-500 rounded-xl pl-9 pr-3 py-2 text-xs text-fb-text focus:outline-none transition-colors"
-          />
+        {/** Thanh Nút Lọc Nhanh 1-Chạm (Quick Filter Pills) */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-fb-surface-hover/40">
+          <span className="text-[11px] font-bold text-fb-text-muted mr-1 flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px] text-cyan-400">filter_list</span>
+            Lọc Nhanh:
+          </span>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('all')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'all'
+                ? 'bg-blue-600/30 text-blue-300 border-blue-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-fb-text'
+            }`}
+          >
+            Tất cả ({stats.total})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('missing_cover')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'missing_cover'
+                ? 'bg-amber-600/30 text-amber-300 border-amber-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-amber-300'
+            }`}
+          >
+            Chưa có Ảnh Bìa ({stats.missingCover})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('missing_avatar')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'missing_avatar'
+                ? 'bg-cyan-600/30 text-cyan-300 border-cyan-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-cyan-300'
+            }`}
+          >
+            Chưa có Avatar ({stats.missingAvatar})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('missing_both_images')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'missing_both_images'
+                ? 'bg-orange-600/30 text-orange-300 border-orange-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-orange-300'
+            }`}
+          >
+            Chưa có Cả 2 Ảnh ({stats.missingBothImages})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('missing_bio')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'missing_bio'
+                ? 'bg-teal-600/30 text-teal-300 border-teal-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-teal-300'
+            }`}
+          >
+            Chưa có Mô Tả Bio ({stats.missingBio})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('incomplete_any')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'incomplete_any'
+                ? 'bg-rose-600/30 text-rose-300 border-rose-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-rose-300'
+            }`}
+          >
+            Chưa Hoàn Thiện ({stats.incompleteAny})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFilterStatus('completed_all')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+              filterStatus === 'completed_all'
+                ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/60 shadow-xs'
+                : 'bg-fb-surface-hover/40 text-fb-text-muted border-transparent hover:text-emerald-300'
+            }`}
+          >
+            Đã Hoàn Thiện Đầy Đủ ({stats.completedAll})
+          </button>
+
+          {stats.musePending > 0 && (
+            <button
+              type="button"
+              onClick={() => setFilterStatus('muse_pending')}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border flex items-center gap-1 ${
+                filterStatus === 'muse_pending'
+                  ? 'bg-amber-600/30 text-amber-300 border-amber-500/60 shadow-xs'
+                  : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+              }`}
+            >
+              <span className="material-symbols-outlined text-xs animate-spin">sync</span>
+              Chờ Muse Vẽ ({stats.musePending})
+            </button>
+          )}
         </div>
       </div>
 
@@ -729,22 +915,37 @@ export default function BrandingStudio() {
           {/** Nút chạy tác vụ tương ứng với Tab */}
           <div className="flex items-center gap-3 w-full md:w-auto shrink-0">
             {activeTab === 'branding' && (
-              <>
+              <div className="flex flex-wrap items-center gap-2">
+                {/** Chọn mục tiêu vẽ ảnh cho Muse.ai */}
+                <div className="w-48">
+                  <CustomDropdown
+                    value={museTargetType}
+                    onChange={(val) => setMuseTargetType(val as any)}
+                    options={[
+                      { value: 'both', label: 'Vẽ Cả Bộ (Ava + Bìa)' },
+                      { value: 'avatar', label: 'Chỉ Vẽ Avatar (1:1)' },
+                      { value: 'cover', label: 'Chỉ Vẽ Ảnh Bìa (16:9)' },
+                    ]}
+                    className="w-full text-xs"
+                  />
+                </div>
+
                 <button
                   type="button"
-                  onClick={handleBatchGenerateBranding}
+                  onClick={() => handleEnqueueMuseBranding()}
                   disabled={isProcessingBatch || targetPages.length === 0}
-                  className="px-5 py-2.5 bg-gradient-to-r from-cyan-600 via-blue-600 to-cyan-500 hover:opacity-90 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-cyan-500/25 active:scale-95 transition-all disabled:opacity-50"
+                  className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-cyan-500 hover:opacity-90 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-blue-500/25 active:scale-95 transition-all disabled:opacity-50"
+                  title="Đưa các Fanpage đã chọn vào hàng đợi vẽ ảnh cho Muse.ai Worker"
                 >
                   {isProcessingBatch ? (
                     <>
                       <span className="material-symbols-outlined animate-spin text-sm">sync</span>
-                      <span>Đang Xử Lý ({targetPages.length} Page)...</span>
+                      <span>Đang Đưa Vào Hàng Đợi...</span>
                     </>
                   ) : (
                     <>
-                      <span className="material-symbols-outlined text-sm">auto_awesome</span>
-                      <span>Tạo Cả Bộ (Gemini 2K)</span>
+                      <span className="material-symbols-outlined text-sm">smart_toy</span>
+                      <span>Đưa Vào Hàng Đợi Muse.ai ({targetPages.length} Page)</span>
                     </>
                   )}
                 </button>
@@ -754,11 +955,12 @@ export default function BrandingStudio() {
                   onClick={handleBatchApplyBranding}
                   disabled={isProcessingBatch || targetPages.length === 0}
                   className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-95 transition-all disabled:opacity-50"
+                  title="Gắn hàng loạt bộ nhận diện ảnh lên Facebook"
                 >
                   <span className="material-symbols-outlined text-sm">cloud_upload</span>
-                  <span>Gắn Lên Facebook Hàng Loạt</span>
+                  <span>Gắn Lên FB Hàng Loạt</span>
                 </button>
-              </>
+              </div>
             )}
 
             {activeTab === 'bio' && (
@@ -958,6 +1160,27 @@ export default function BrandingStudio() {
       {/** TAB 1: VISUAL CARD GRID - BỘ NHẬN DIỆN ẢNH (AVATAR & COVER) */}
       {activeTab === 'branding' && (
         <div className="space-y-4">
+          {/** Banner Hướng dẫn Muse.ai RPA Worker */}
+          <div className="p-3.5 bg-blue-600/10 border border-blue-500/25 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-blue-300">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-600/20 flex items-center justify-center text-cyan-400 shrink-0">
+                <span className="material-symbols-outlined text-lg">smart_toy</span>
+              </div>
+              <div>
+                <span className="font-bold text-fb-text">Muse.ai RPA Worker (Phương án 1):</span>
+                <span className="text-fb-text-muted ml-1.5">
+                  Tích chọn các Fanpage rồi nhấn <b>"Đưa Vào Hàng Đợi Muse.ai"</b>. Sau đó chạy file <code className="px-1.5 py-0.5 rounded bg-slate-900 text-cyan-300 font-mono text-[11px] border border-slate-700">start_muse_branding_worker.bat</code> trên máy tính (kết nối Chrome 9222) để tự động vẽ ảnh và đồng bộ lên Facebook.
+                </span>
+              </div>
+            </div>
+            {stats.musePending > 0 && (
+              <div className="shrink-0 px-3 py-1.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+                <span className="material-symbols-outlined text-sm animate-spin">sync</span>
+                <span>Chờ Muse vẽ: {stats.musePending} page</span>
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center justify-between text-xs text-fb-text-muted px-1">
             <span>Hiển thị: <b>{filteredPages.length}</b> Fanpage</span>
             <span>Đang chọn: <b className="text-cyan-400">{selectedPageIds.length}</b> Fanpage</span>
@@ -1083,12 +1306,69 @@ export default function BrandingStudio() {
                         <div className="text-[10px] text-fb-text-muted mt-0.5 font-mono">
                           ID: {page.id}
                         </div>
+
+                        {/** Nhãn trạng thái Nhận diện & Hàng đợi Muse */}
+                        {(() => {
+                          const flags = getPageStatusFlags(page);
+                          return (
+                            <div className="flex flex-wrap items-center gap-1 mt-2">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                flags.hasAvatar ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'
+                              }`}>
+                                Ava {flags.hasAvatar ? '✓' : '✕'}
+                              </span>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                flags.hasCover ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'
+                              }`}>
+                                Bìa {flags.hasCover ? '✓' : '✕'}
+                              </span>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                flags.hasBio ? 'bg-teal-500/15 text-teal-300 border-teal-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'
+                              }`}>
+                                Bio {flags.hasBio ? '✓' : '✕'}
+                              </span>
+                              {flags.museStatus === 'PENDING' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse flex items-center gap-0.5">
+                                  <span className="material-symbols-outlined text-[10px] animate-spin">sync</span>
+                                  Chờ Muse
+                                </span>
+                              )}
+                              {flags.museStatus === 'PROCESSING' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 animate-pulse flex items-center gap-0.5">
+                                  <span className="material-symbols-outlined text-[10px] animate-spin">autorenew</span>
+                                  Đang vẽ
+                                </span>
+                              )}
+                              {flags.museStatus === 'COMPLETED' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-0.5">
+                                  <span className="material-symbols-outlined text-[10px]">check</span>
+                                  Muse OK
+                                </span>
+                              )}
+                              {flags.museStatus === 'FAILED' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-300 border border-red-500/40 flex items-center gap-0.5" title={(page as any).brandingErrorLog || 'Lỗi Muse'}>
+                                  <span className="material-symbols-outlined text-[10px]">error</span>
+                                  Lỗi Muse
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
 
                     {/** Thao tác nhanh trên từng Card */}
                     <div className="pt-3 border-t border-fb-surface-hover/50 flex flex-wrap items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleEnqueueMuseBranding(page.id)}
+                          className="px-2 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 text-[11px] font-bold border border-blue-500/40 flex items-center gap-1 transition-all"
+                          title="Đưa riêng Fanpage này vào hàng đợi Muse.ai Worker vẽ ảnh"
+                        >
+                          <span className="material-symbols-outlined text-xs text-cyan-400">smart_toy</span>
+                          <span>Vẽ Muse</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleSingleRegenerateItem(page, 'cover')}
@@ -1266,6 +1546,22 @@ export default function BrandingStudio() {
                         <div className="text-[10px] text-slate-500 mt-0.5">
                           {page.businessName || 'Cá nhân'}
                         </div>
+                        {(() => {
+                          const flags = getPageStatusFlags(page);
+                          return (
+                            <div className="flex items-center gap-1 mt-1.5">
+                              <span className={`px-1 py-0.2 rounded text-[9px] font-bold border ${flags.hasAvatar ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'}`}>
+                                Ava {flags.hasAvatar ? '✓' : '✕'}
+                              </span>
+                              <span className={`px-1 py-0.2 rounded text-[9px] font-bold border ${flags.hasCover ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'}`}>
+                                Bìa {flags.hasCover ? '✓' : '✕'}
+                              </span>
+                              <span className={`px-1 py-0.2 rounded text-[9px] font-bold border ${flags.hasBio ? 'bg-teal-500/15 text-teal-300 border-teal-500/30' : 'bg-red-500/15 text-red-400 border-red-500/30'}`}>
+                                Bio {flags.hasBio ? '✓' : '✕'}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/** Inline Editable Bio Textarea */}

@@ -77,6 +77,10 @@ model ztteam_pages {
   branding_avatar_prompt    String?  @db.Text
   branding_cover_prompt     String?  @db.Text
   branding_description      String?  @db.Text
+  branding_status           String?  @default("NONE") /** 'NONE', 'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED' */
+  branding_target           String?  @default("both") /** 'both', 'avatar', 'cover' */
+  branding_error_log        String?  @db.Text
+  branding_updated_at       DateTime?
   
   /** Tab 1 & 2 */
   tags                           String[] @default([])

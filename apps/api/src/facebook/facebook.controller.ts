@@ -251,4 +251,54 @@ export class ZTTeamFacebookController {
   ) {
     return this.facebookService.ztteam_batchApplyDescriptions(body || {});
   }
+
+  /**
+   * ZTTeam: Các endpoint cho Muse.ai RPA Worker (Phương án 1)
+   */
+  @Post('pages/branding/muse/enqueue')
+  ztteam_enqueueMuseBranding(
+    @Body() body: { pageIds?: string[]; theme?: string; target?: 'both' | 'avatar' | 'cover'; overwriteExisting?: boolean }
+  ) {
+    return this.facebookService.ztteam_enqueueMuseBranding(body || {});
+  }
+
+  @Get('pages/branding/muse/pending-job')
+  ztteam_getPendingMuseBrandingJob() {
+    return this.facebookService.ztteam_getPendingMuseBrandingJob();
+  }
+
+  @Post('pages/:pageId/branding/muse/upload')
+  @UseInterceptors(FileInterceptor('image', {
+    storage: diskStorage({
+      destination: (req: any, file: any, cb: any) => {
+        const uploadDir = path.join(ztteam_getStorageRoot(), 'branding');
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+      },
+      filename: (req: any, file: any, cb: any) => {
+        const ext = path.extname(file.originalname) || '.png';
+        const type = req.body?.type || 'avatar';
+        const unique = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        cb(null, `muse_${type}_${unique}${ext}`);
+      }
+    })
+  }))
+  ztteam_uploadMuseBrandingImage(
+    @Param('pageId') pageId: string,
+    @UploadedFile() file: any,
+    @Body('type') type: 'avatar' | 'cover' = 'avatar',
+    @Body('autoApply') autoApply?: string
+  ) {
+    return this.facebookService.ztteam_uploadMuseBrandingImage(pageId, file, type, autoApply !== 'false');
+  }
+
+  @Post('pages/:pageId/branding/muse/status')
+  ztteam_updateMuseBrandingStatus(
+    @Param('pageId') pageId: string,
+    @Body() body: { status: 'PROCESSING' | 'COMPLETED' | 'FAILED'; error?: string }
+  ) {
+    return this.facebookService.ztteam_updateMuseBrandingStatus(pageId, body.status, body.error);
+  }
 }
