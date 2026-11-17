@@ -18,10 +18,15 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
-      /** Token expired or invalid -> force logout */
-      localStorage.removeItem('ztteam_access_token');
-      localStorage.removeItem('ztteam_user');
-      window.location.href = '/login';
+      /** Tránh reload vô tận khi đang ở màn hình login hoặc đang gọi endpoint /auth/login */
+      const isLoginRequest = error.config?.url?.includes('/auth/login');
+      if (!isLoginRequest) {
+        localStorage.removeItem('ztteam_access_token');
+        localStorage.removeItem('ztteam_user');
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }
     }
     return Promise.reject(error);
   }
