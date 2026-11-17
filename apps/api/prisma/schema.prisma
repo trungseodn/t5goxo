@@ -72,15 +72,24 @@ model ztteam_pages {
   default_image_template_id String?
   is_active                 Boolean  @default(true)
   cover_url                 String?
-  branding_avatar_url       String?
-  branding_cover_url        String?
-  branding_avatar_prompt    String?  @db.Text
-  branding_cover_prompt     String?  @db.Text
-  branding_description      String?  @db.Text
-  branding_status           String?  @default("NONE") /** 'NONE', 'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED' */
-  branding_target           String?  @default("both") /** 'both', 'avatar', 'cover' */
-  branding_error_log        String?  @db.Text
-  branding_updated_at       DateTime?
+  branding_avatar_url            String?
+  branding_cover_url             String?
+  branding_avatar_prompt         String?  @db.Text
+  branding_cover_prompt          String?  @db.Text
+  branding_status                String?  @default("NONE") /** NONE | PENDING | PROCESSING | COMPLETED | FAILED */
+  branding_type                  String?  @default("both") /** both | avatar | cover */
+  branding_target                String?  @default("both") /** alias for backward compatibility */
+  branding_theme                 String?  @default("story_narrative")
+  branding_custom_avatar_prompt  String?  @db.Text
+  branding_custom_cover_prompt   String?  @db.Text
+  branding_bio                   String?  @db.Text
+  branding_description           String?  @db.Text
+  branding_custom_bio_template   String?  @db.Text
+  branding_custom_desc_template  String?  @db.Text
+  branding_auto_apply            Boolean  @default(true)
+  branding_error                 String?  @db.Text
+  branding_error_log             String?  @db.Text
+  branding_updated_at            DateTime?
   
   /** Tab 1 & 2 */
   tags                           String[] @default([])

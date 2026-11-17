@@ -44,9 +44,18 @@ export interface ZTTeamFanpage {
   brandingAvatarUrl?: string | null;
   brandingCoverUrl?: string | null;
   brandingDescription?: string | null;
-  brandingStatus?: 'NONE' | 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  brandingBio?: string | null;
+  brandingStatus?: 'NONE' | 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | string;
   brandingTarget?: string | null;
+  brandingType?: string | null;
+  brandingTheme?: string | null;
+  brandingAvatarPrompt?: string | null;
+  brandingCoverPrompt?: string | null;
+  brandingError?: string | null;
   brandingErrorLog?: string | null;
+  hasCustomAvatar?: boolean;
+  hasCustomCover?: boolean;
+  primarySourceWeb?: string | null;
 }
 
 interface ZTTeamFacebookState {

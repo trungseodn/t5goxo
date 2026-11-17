@@ -13,9 +13,16 @@ export class ZTTeamAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
-    const url = request.originalUrl || request.url || '';
-    /** Cho phép Muse RPA Worker gọi các endpoint hàng đợi và upload ảnh nhận diện */
-    if (url.includes('/branding/muse/')) {
+    const reqPath = request.originalUrl || request.path || request.url || '';
+    /** Cho phép Muse RPA Worker gọi các endpoint hàng đợi và upload ảnh nhận diện (theo chuẩn t6) */
+    if (
+      reqPath.includes('/branding/pending-job') || 
+      reqPath.includes('/branding/heartbeat') || 
+      reqPath.includes('/branding/queue-status') || 
+      reqPath.includes('/branding/queue-reset') || 
+      reqPath.includes('/branding/muse/') || 
+      (reqPath.includes('/branding/') && (reqPath.includes('/attach-result') || reqPath.includes('/reset')))
+    ) {
       return true;
     }
 

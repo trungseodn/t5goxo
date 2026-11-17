@@ -10,6 +10,14 @@ import { firstValueFrom } from 'rxjs';
 export class ZTTeamFacebookService {
   private readonly logger = new Logger(ZTTeamFacebookService.name);
   private readonly API_VERSION = 'v25.0';
+  private lastBrandingWorkerPingAt: Date | null = null;
+  private lastBrandingWorkerName: string | null = null;
+
+  ztteam_recordBrandingWorkerHeartbeat(workerName?: string) {
+    this.lastBrandingWorkerPingAt = new Date();
+    if (workerName) this.lastBrandingWorkerName = workerName;
+    return { success: true, timestamp: Date.now() };
+  }
 
   constructor(
     private readonly httpService: HttpService,
@@ -696,10 +704,20 @@ export class ZTTeamFacebookService {
         category: p.category,
         brandingAvatarUrl: (p as any).branding_avatar_url || null,
         brandingCoverUrl: (p as any).branding_cover_url || null,
-        brandingDescription: (p as any).branding_description || null,
         brandingStatus: (p as any).branding_status || 'NONE',
-        brandingTarget: (p as any).branding_target || 'both',
-        brandingErrorLog: (p as any).branding_error_log || null,
+        brandingType: (p as any).branding_type || (p as any).branding_target || 'both',
+        brandingTarget: (p as any).branding_target || (p as any).branding_type || 'both',
+        brandingTheme: (p as any).branding_theme || 'story_narrative',
+        brandingAvatarPrompt: (p as any).branding_custom_avatar_prompt || (p as any).branding_avatar_prompt || null,
+        brandingCoverPrompt: (p as any).branding_custom_cover_prompt || (p as any).branding_cover_prompt || null,
+        brandingError: (p as any).branding_error || (p as any).branding_error_log || null,
+        brandingErrorLog: (p as any).branding_error_log || (p as any).branding_error || null,
+        brandingBio: (p as any).branding_bio || null,
+        brandingDescription: (p as any).branding_description || null,
+        brandingCustomBioTemplate: (p as any).branding_custom_bio_template || null,
+        brandingCustomDescTemplate: (p as any).branding_custom_desc_template || null,
+        hasCustomAvatar: !!(p as any).branding_avatar_url,
+        hasCustomCover: !!(p as any).branding_cover_url,
         followersCount: p.follower_count,
         avatar: (p as any).branding_avatar_url || p.avatar,
         accountType: p.fb_account.business_id ? (p.fb_account.account_type || 'SYSTEM_USER') : 'PERSONAL',
@@ -2867,6 +2885,7 @@ export class ZTTeamFacebookService {
     coverUrl?: string;
     avatarLocalPath?: string;
     coverLocalPath?: string;
+    bio?: string;
     description?: string;
   }) {
     const page = await this.prisma.ztteam_pages.findFirst({
@@ -2958,6 +2977,27 @@ export class ZTTeamFacebookService {
           )
         );
         updatedAvatar = true;
+
+        /** Lấy CDN URL trực tiếp từ Facebook để lưu vào DB */
+        try {
+          const picRes = await firstValueFrom(
+            this.httpService.get(
+              `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}/picture`,
+              {
+                params: {
+                  type: 'large',
+                  redirect: false,
+                  access_token: page.page_token_encrypted
+                }
+              }
+            )
+          );
+          if (picRes.data?.data?.url) {
+            data.avatarUrl = picRes.data.data.url;
+          }
+        } catch (e: any) {
+          this.logger.warn(`Không lấy được direct avatar url: ${e.message}`);
+        }
       } catch (err: any) {
         this.logger.error(`Lỗi cập nhật Avatar trên Facebook: ${err.response?.data?.error?.message || err.message}`);
         throw new BadRequestException(`Lỗi cập nhật Avatar Facebook: ${err.response?.data?.error?.message || err.message}`);
@@ -3003,33 +3043,70 @@ export class ZTTeamFacebookService {
           )
         );
         updatedCover = true;
+
+        /** Lấy CDN URL trực tiếp của ảnh bìa từ Facebook để lưu vào DB */
+        try {
+          const photoInfo = await firstValueFrom(
+            this.httpService.get(
+              `https://graph.facebook.com/${this.API_VERSION}/${photoId}`,
+              {
+                params: {
+                  fields: 'images,source',
+                  access_token: page.page_token_encrypted
+                }
+              }
+            )
+          );
+          if (photoInfo.data?.source) {
+            data.coverUrl = photoInfo.data.source;
+          }
+        } catch (e: any) {
+          this.logger.warn(`Không lấy được direct cover source: ${e.message}`);
+        }
       } catch (err: any) {
         this.logger.error(`Lỗi cập nhật Ảnh bìa trên Facebook: ${err.response?.data?.error?.message || err.message}`);
         throw new BadRequestException(`Lỗi cập nhật Ảnh bìa Facebook: ${err.response?.data?.error?.message || err.message}`);
       }
     }
 
-    /** 3. Cập nhật Mô tả (Bio / About) lên Facebook nếu có */
-    if (data.description && data.description.trim()) {
+    const pageBio = data.bio || (page as any).branding_bio;
+    const pageDesc = data.description || (page as any).branding_description;
+
+    /** 3. Cập nhật Mô tả & Tiểu sử (Bio / About) lên Facebook nếu có */
+    if (pageBio || pageDesc) {
       try {
-        const descText = data.description.trim();
-        this.logger.log(`Đang cập nhật mô tả lên Facebook cho Page ${page.name}...`);
+        this.logger.log(`Đang cập nhật Tiểu sử & Mô tả Facebook cho Page ${page.name}...`);
+        const updateParams: any = { access_token: page.page_token_encrypted };
+        if (pageBio) {
+          updateParams.about = pageBio.slice(0, 255);
+          updateParams.bio = pageBio.slice(0, 101);
+        }
+        if (pageDesc) updateParams.description = pageDesc;
+
         await firstValueFrom(
           this.httpService.post(
             `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
             null,
-            {
-              params: {
-                about: descText.slice(0, 255),
-                description: descText,
-                access_token: page.page_token_encrypted
-              }
-            }
+            { params: updateParams }
           )
         );
         updatedDescription = true;
-      } catch (descErr: any) {
-        this.logger.warn(`Lỗi cập nhật Mô tả trên Facebook: ${descErr.response?.data?.error?.message || descErr.message}`);
+      } catch (e1: any) {
+        try {
+          const fallbackParams: any = { access_token: page.page_token_encrypted };
+          if (pageBio) fallbackParams.about = pageBio.slice(0, 255);
+          if (pageDesc) fallbackParams.description = pageDesc;
+          await firstValueFrom(
+            this.httpService.post(
+              `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+              null,
+              { params: fallbackParams }
+            )
+          );
+          updatedDescription = true;
+        } catch (e2: any) {
+          this.logger.warn(`Lỗi cập nhật Mô tả trên Facebook cho ${page.name}: ${e2.response?.data?.error?.message || e2.message}`);
+        }
       }
     }
 
@@ -3051,8 +3128,11 @@ export class ZTTeamFacebookService {
         updateData.branding_cover_url = data.coverUrl;
       }
     }
-    if (data.description && data.description.trim()) {
-      updateData.branding_description = data.description.trim();
+    if (pageBio) {
+      updateData.branding_bio = pageBio;
+    }
+    if (pageDesc) {
+      updateData.branding_description = pageDesc;
     }
 
     if (Object.keys(updateData).length > 0) {
@@ -3060,6 +3140,35 @@ export class ZTTeamFacebookService {
         where: { id: page.id },
         data: updateData
       });
+    }
+
+    /** 5. [Bảo vệ an toàn dữ liệu & Giải phóng ổ đĩa] Xóa file ảnh tạm sau khi cập nhật thành công lên Fanpage */
+    const storageBrandingDir = path.resolve(ztteam_getStorageRoot(), 'branding');
+
+    if (updatedAvatar && avatarFilePath) {
+      try {
+        const resolvedAvatar = path.resolve(avatarFilePath);
+        // Kiểm tra an toàn tuyệt đối: File PHẢI nằm trong thư mục storage/branding và tồn tại
+        if (resolvedAvatar.startsWith(storageBrandingDir) && fs.existsSync(resolvedAvatar)) {
+          fs.unlinkSync(resolvedAvatar);
+          this.logger.log(`[Safe Cleanup] Đã xóa an toàn file ảnh Avatar tạm sau khi tải lên Fanpage: ${resolvedAvatar}`);
+        }
+      } catch (delErr: any) {
+        this.logger.warn(`[Safe Cleanup] Lỗi khi xóa Avatar tạm: ${delErr.message}`);
+      }
+    }
+
+    if (updatedCover && coverFilePath) {
+      try {
+        const resolvedCover = path.resolve(coverFilePath);
+        // Kiểm tra an toàn tuyệt đối: File PHẢI nằm trong thư mục storage/branding và tồn tại
+        if (resolvedCover.startsWith(storageBrandingDir) && fs.existsSync(resolvedCover)) {
+          fs.unlinkSync(resolvedCover);
+          this.logger.log(`[Safe Cleanup] Đã xóa an toàn file ảnh Bìa tạm sau khi tải lên Fanpage: ${resolvedCover}`);
+        }
+      } catch (delErr: any) {
+        this.logger.warn(`[Safe Cleanup] Lỗi khi xóa Ảnh bìa tạm: ${delErr.message}`);
+      }
     }
 
     const appliedItems = [
@@ -4020,18 +4129,21 @@ export class ZTTeamFacebookService {
     // Nếu autoApply = true: Tự động đồng bộ lên Facebook Graph API ngay lập tức
     let appliedToFacebook = false;
     let applyError = null;
+    let finalImageUrl = imageUrl;
     if (autoApply) {
       try {
         if (type === 'avatar') {
-          await this.ztteam_applyPageBranding(page.id, {
+          const res = await this.ztteam_applyPageBranding(page.id, {
             avatarUrl: imageUrl,
             avatarLocalPath: localPath,
           });
+          if (res?.newAvatarUrl) finalImageUrl = res.newAvatarUrl;
         } else {
-          await this.ztteam_applyPageBranding(page.id, {
+          const res = await this.ztteam_applyPageBranding(page.id, {
             coverUrl: imageUrl,
             coverLocalPath: localPath,
           });
+          if (res?.newCoverUrl) finalImageUrl = res.newCoverUrl;
         }
         appliedToFacebook = true;
       } catch (err: any) {
@@ -4044,10 +4156,555 @@ export class ZTTeamFacebookService {
       success: true,
       pageId: page.id,
       type,
-      imageUrl,
+      imageUrl: finalImageUrl,
       brandingStatus: updateData.branding_status || 'PENDING',
       appliedToFacebook,
       applyError,
+    };
+  }
+
+  /**
+   * ZTTeam: Đưa hàng loạt Fanpage vào hàng đợi tạo Ảnh bìa & Avatar bằng Muse.ai (theo chuẩn t6)
+   */
+  async ztteam_queueBrandingJobs(userId: string, body: {
+    scope?: 'bm' | 'selected' | 'all';
+    bmName?: string;
+    pageIds?: string[];
+    filterMode?: 'missing_only' | 'missing_cover' | 'missing_avatar' | 'all';
+    customAvatarPrompt?: string;
+    customCoverPrompt?: string;
+    theme?: string;
+    autoApplyFacebook?: boolean;
+    brandingType?: 'both' | 'avatar' | 'cover';
+    customBioTemplate?: string;
+    customDescTemplate?: string;
+    autoApplyBioDesc?: boolean;
+  }) {
+    const {
+      scope = 'bm',
+      bmName,
+      pageIds = [],
+      filterMode = 'missing_only',
+      customAvatarPrompt,
+      customCoverPrompt,
+      theme = 'story_narrative',
+      autoApplyFacebook = true,
+      brandingType = 'both',
+      customBioTemplate,
+      customDescTemplate,
+      autoApplyBioDesc = true,
+    } = body;
+
+    const user = await this.prisma.ztteam_users.findUnique({ where: { id: userId } });
+    const isAdmin = !user || user.role === 'ADMIN';
+
+    let whereClause: any = { is_active: true };
+    if (!isAdmin) {
+      whereClause.fb_account = { owner_user_id: userId };
+    }
+
+    if (scope === 'bm' && bmName) {
+      whereClause.fb_account = { ...(whereClause.fb_account || {}), business_name: bmName };
+    } else if (scope === 'selected' && pageIds.length > 0) {
+      whereClause.OR = [
+        { id: { in: pageIds } },
+        { fb_page_id: { in: pageIds } }
+      ];
+    }
+
+    const candidatePages = await this.prisma.ztteam_pages.findMany({
+      where: whereClause,
+      include: { fb_account: true, sources: true },
+      orderBy: { name: 'asc' }
+    });
+
+    const filteredPages = candidatePages.filter(p => {
+      if (scope === 'selected') return true;
+      const hasAvatar = !!(p as any).branding_avatar_url;
+      const hasCover = !!(p as any).branding_cover_url;
+      if (filterMode === 'missing_only') return !hasAvatar || !hasCover;
+      if (filterMode === 'missing_cover') return !hasCover;
+      if (filterMode === 'missing_avatar') return !hasAvatar;
+      return true;
+    });
+
+    if (filteredPages.length === 0) {
+      return {
+        success: false,
+        totalQueued: 0,
+        message: 'Không tìm thấy Fanpage nào thỏa mãn điều kiện lọc để đưa vào hàng đợi.'
+      };
+    }
+
+    const defaultAvatarPrompt = customAvatarPrompt?.trim() ||
+      `Create a 1:1 square iconic profile picture avatar for a storytelling page named "{PAGE_NAME}". Theme: historical mysteries and forgotten stories. Cinematic atmospheric lighting, dramatic depth, 8k resolution, minimalist emblem style, photorealistic.`;
+    
+    const defaultCoverPrompt = customCoverPrompt?.trim() ||
+      `Create a breathtaking cinematic 16:9 widescreen Facebook cover banner for "{PAGE_NAME}". Theme: atmospheric historical archive, ancient secrets, dramatic storytelling mood, rich textures, volumetric lighting, photorealistic masterpiece, 8k.`;
+
+    let queuedCount = 0;
+    for (const page of filteredPages) {
+      const pageAvatarPrompt = defaultAvatarPrompt
+        .replace(/\{PAGE_NAME\}/g, page.name)
+        .replace(/\{CATEGORY\}/g, page.category || 'Story')
+        .replace(/\{THEME\}/g, theme);
+
+      const pageCoverPrompt = defaultCoverPrompt
+        .replace(/\{PAGE_NAME\}/g, page.name)
+        .replace(/\{CATEGORY\}/g, page.category || 'Story')
+        .replace(/\{THEME\}/g, theme);
+
+      const defaultBioTemplate = customBioTemplate?.trim();
+      const defaultDescTemplate = customDescTemplate?.trim();
+
+      const pageBio = defaultBioTemplate
+        ? defaultBioTemplate
+            .replace(/\{PAGE_NAME\}/g, page.name)
+            .replace(/\{CATEGORY\}/g, page.category || 'Story')
+            .replace(/\{THEME\}/g, theme)
+        : undefined;
+
+      const pageDesc = defaultDescTemplate
+        ? defaultDescTemplate
+            .replace(/\{PAGE_NAME\}/g, page.name)
+            .replace(/\{CATEGORY\}/g, page.category || 'Story')
+            .replace(/\{THEME\}/g, theme)
+        : undefined;
+
+      await this.prisma.ztteam_pages.update({
+        where: { id: page.id },
+        data: {
+          branding_status: 'PENDING',
+          branding_type: brandingType,
+          branding_target: brandingType,
+          branding_theme: theme,
+          branding_custom_avatar_prompt: pageAvatarPrompt,
+          branding_custom_cover_prompt: pageCoverPrompt,
+          ...(pageBio !== undefined ? { branding_bio: pageBio, branding_custom_bio_template: defaultBioTemplate } : {}),
+          ...(pageDesc !== undefined ? { branding_description: pageDesc, branding_custom_desc_template: defaultDescTemplate } : {}),
+          branding_auto_apply: autoApplyFacebook,
+          branding_error: null,
+          branding_error_log: null,
+          branding_updated_at: new Date(),
+        } as any
+      });
+      queuedCount++;
+    }
+
+    return {
+      success: true,
+      totalQueued: queuedCount,
+      message: `Đã đưa ${queuedCount} Fanpage vào hàng đợi tạo nhận diện Muse thành công!`,
+    };
+  }
+
+  /**
+   * ZTTeam: Muse Worker lấy job tạo Avatar & Ảnh bìa tiếp theo (theo chuẩn t6)
+   * Tự động giải phóng job kẹt > 15 phút
+   */
+  async ztteam_getPendingBrandingJob() {
+    this.lastBrandingWorkerPingAt = new Date();
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    await this.prisma.ztteam_pages.updateMany({
+      where: {
+        branding_status: 'PROCESSING',
+        branding_updated_at: { lt: fifteenMinutesAgo }
+      } as any,
+      data: {
+        branding_status: 'PENDING',
+      } as any
+    });
+
+    const pendingJob = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRawUnsafe<Array<{ id: string }>>(`
+        SELECT zp.id
+        FROM ztteam_pages zp
+        WHERE zp.is_active = true
+          AND zp.branding_status = 'PENDING'
+        ORDER BY zp.branding_updated_at ASC NULLS FIRST
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      `);
+
+      if (!rows || rows.length === 0) return null;
+      const chosenId = rows[0].id;
+
+      await tx.ztteam_pages.update({
+        where: { id: chosenId },
+        data: {
+          branding_status: 'PROCESSING',
+          branding_updated_at: new Date(),
+        } as any
+      });
+
+      return await tx.ztteam_pages.findUnique({
+        where: { id: chosenId },
+        include: { fb_account: true, sources: true }
+      });
+    });
+
+    if (!pendingJob) {
+      return { success: false, message: 'Không có job nhận diện nào đang chờ' };
+    }
+
+    const type = (pendingJob as any).branding_type || (pendingJob as any).branding_target || 'both';
+    const needsAvatar = type === 'both' || type === 'avatar';
+    const needsCover = type === 'both' || type === 'cover';
+
+    return {
+      success: true,
+      job: {
+        id: pendingJob.id,
+        pageId: pendingJob.id,
+        fbPageId: pendingJob.fb_page_id,
+        pageFbId: pendingJob.fb_page_id,
+        name: pendingJob.name,
+        pageName: pendingJob.name,
+        category: pendingJob.category,
+        businessName: pendingJob.fb_account?.business_name,
+        theme: (pendingJob as any).branding_theme || 'story_narrative',
+        type,
+        needsAvatar,
+        needsCover,
+        avatarPrompt: (pendingJob as any).branding_custom_avatar_prompt || (pendingJob as any).branding_avatar_prompt,
+        coverPrompt: (pendingJob as any).branding_custom_cover_prompt || (pendingJob as any).branding_cover_prompt,
+        autoApply: (pendingJob as any).branding_auto_apply ?? true,
+        autoApplyFacebook: (pendingJob as any).branding_auto_apply ?? true,
+      }
+    };
+  }
+
+  /**
+   * ZTTeam: Muse Worker upload file Avatar / Cover kết quả lên hệ thống (theo chuẩn t6)
+   */
+  async ztteam_attachBrandingResult(pageId: string, data: {
+    avatarFile?: any;
+    coverFile?: any;
+    avatarUrl?: string;
+    coverUrl?: string;
+    error?: string;
+    partial?: boolean | string;
+    stage?: 'avatar' | 'cover' | 'both';
+    autoApply?: boolean | string;
+  }) {
+    this.lastBrandingWorkerPingAt = new Date();
+    const page = await this.prisma.ztteam_pages.findFirst({
+      where: {
+        OR: [{ id: pageId }, { fb_page_id: pageId }]
+      }
+    });
+
+    if (!page) {
+      throw new BadRequestException('Fanpage không tồn tại');
+    }
+
+    if (data.error) {
+      await this.prisma.ztteam_pages.update({
+        where: { id: page.id },
+        data: {
+          branding_status: 'FAILED',
+          branding_error: data.error,
+          branding_error_log: data.error,
+          branding_updated_at: new Date(),
+        } as any
+      });
+      return { success: false, message: `Ghi nhận lỗi từ Muse Worker: ${data.error}` };
+    }
+
+    const isPartial = data.partial === true || data.partial === 'true';
+    const updateData: any = {
+      branding_status: isPartial ? 'PROCESSING' : 'COMPLETED',
+      branding_error: null,
+      branding_error_log: null,
+      branding_updated_at: new Date(),
+    };
+
+    let avatarLocalPath: string | undefined;
+    let coverLocalPath: string | undefined;
+
+    if (data.avatarFile) {
+      updateData.branding_avatar_url = `/storage/branding/${data.avatarFile.filename}`;
+      avatarLocalPath = data.avatarFile.path;
+    } else if (data.avatarUrl) {
+      updateData.branding_avatar_url = data.avatarUrl;
+    }
+
+    if (data.coverFile) {
+      updateData.branding_cover_url = `/storage/branding/${data.coverFile.filename}`;
+      coverLocalPath = data.coverFile.path;
+    } else if (data.coverUrl) {
+      updateData.branding_cover_url = data.coverUrl;
+    }
+
+    await this.prisma.ztteam_pages.update({
+      where: { id: page.id },
+      data: updateData
+    });
+
+    let appliedFacebook = false;
+    let applyMessage = '';
+    const shouldAutoApply = (data.autoApply !== undefined)
+      ? (data.autoApply === true || data.autoApply === 'true')
+      : ((page as any).branding_auto_apply ?? true);
+
+    if (shouldAutoApply && !isPartial) {
+      try {
+        const applyRes = await this.ztteam_applyPageBranding(page.id, {
+          avatarUrl: updateData.branding_avatar_url,
+          avatarLocalPath,
+          coverUrl: updateData.branding_cover_url,
+          coverLocalPath,
+          bio: (page as any).branding_bio,
+          description: (page as any).branding_description,
+        });
+        appliedFacebook = true;
+        applyMessage = applyRes?.message || 'Đã áp dụng thành công lên Facebook!';
+      } catch (applyErr: any) {
+        applyMessage = `Lỗi áp dụng lên Facebook: ${applyErr.message}`;
+        this.logger.warn(`[Branding Auto-Apply] ${applyMessage}`);
+        await this.prisma.ztteam_pages.update({
+          where: { id: page.id },
+          data: { branding_error: applyMessage, branding_error_log: applyMessage } as any
+        });
+      }
+    }
+
+    return {
+      success: true,
+      pageId: page.id,
+      name: page.name,
+      avatarUrl: updateData.branding_avatar_url,
+      coverUrl: updateData.branding_cover_url,
+      appliedFacebook,
+      applyMessage,
+    };
+  }
+
+  /**
+   * ZTTeam: Thống kê trạng thái hàng đợi Branding (theo chuẩn t6)
+   */
+  async ztteam_getBrandingQueueStatus() {
+    const counts = await this.prisma.ztteam_pages.groupBy({
+      by: ['branding_status'],
+      where: { is_active: true },
+      _count: true,
+    });
+
+    let pending = 0;
+    let processing = 0;
+    let completed = 0;
+    let failed = 0;
+
+    for (const c of counts) {
+      const status = (c as any).branding_status || 'NONE';
+      if (status === 'PENDING') pending = c._count;
+      else if (status === 'PROCESSING') processing = c._count;
+      else if (status === 'COMPLETED') completed = c._count;
+      else if (status === 'FAILED') failed = c._count;
+    }
+
+    const totalPages = await this.prisma.ztteam_pages.count({ where: { is_active: true } });
+    const hasAvatarCount = await this.prisma.ztteam_pages.count({
+      where: { is_active: true, branding_avatar_url: { not: null } }
+    });
+    const hasCoverCount = await this.prisma.ztteam_pages.count({
+      where: { is_active: true, branding_cover_url: { not: null } }
+    });
+    const missingBothCount = await this.prisma.ztteam_pages.count({
+      where: {
+        is_active: true,
+        branding_avatar_url: null,
+        branding_cover_url: null,
+      }
+    });
+
+    const isWorkerOnline = !!this.lastBrandingWorkerPingAt && (Date.now() - this.lastBrandingWorkerPingAt.getTime()) < 35000;
+
+    return {
+      success: true,
+      worker: {
+        online: isWorkerOnline,
+        lastPingAt: this.lastBrandingWorkerPingAt,
+        workerName: this.lastBrandingWorkerName || 'Branding-9245',
+      },
+      queue: {
+        pending,
+        processing,
+        completed,
+        failed,
+        totalActiveJobs: pending + processing,
+      },
+      stats: {
+        totalPages,
+        hasAvatarCount,
+        hasCoverCount,
+        missingBothCount,
+      }
+    };
+  }
+
+  /**
+   * ZTTeam: Đặt lại toàn bộ hàng đợi hoặc giải phóng các job bị kẹt (theo chuẩn t6)
+   */
+  async ztteam_resetAllPendingAndProcessingBrandingJobs(options?: { resetAll?: boolean }) {
+    if (options?.resetAll) {
+      const res = await this.prisma.ztteam_pages.updateMany({
+        where: {
+          is_active: true,
+          branding_status: { in: ['PENDING', 'PROCESSING', 'FAILED'] }
+        } as any,
+        data: {
+          branding_status: 'NONE',
+          branding_error: null,
+          branding_error_log: null,
+          branding_updated_at: new Date()
+        } as any
+      });
+      return { success: true, count: res.count, message: `Đã hủy và làm sạch ${res.count} Fanpage khỏi hàng đợi` };
+    } else {
+      const res = await this.prisma.ztteam_pages.updateMany({
+        where: {
+          is_active: true,
+          branding_status: { in: ['PROCESSING', 'FAILED'] }
+        } as any,
+        data: {
+          branding_status: 'PENDING',
+          branding_updated_at: new Date()
+        } as any
+      });
+      return { success: true, count: res.count, message: `Đã giải phóng ${res.count} Fanpage bị kẹt quay lại hàng đợi chờ vẽ` };
+    }
+  }
+
+  /**
+   * ZTTeam: Hủy bỏ hoặc Reset trạng thái hàng đợi Branding cho Page (theo chuẩn t6)
+   */
+  async ztteam_resetBrandingJob(pageId: string) {
+    await this.prisma.ztteam_pages.updateMany({
+      where: {
+        OR: [{ id: pageId }, { fb_page_id: pageId }]
+      },
+      data: {
+        branding_status: 'NONE',
+        branding_error: null,
+        branding_error_log: null,
+        branding_updated_at: new Date(),
+      } as any
+    });
+    return { success: true, message: 'Đã hủy/reset trạng thái job nhận diện cho Fanpage' };
+  }
+
+  /**
+   * ZTTeam: Cập nhật đồng loạt Mô tả & Tiểu sử (Bio/About) lên Fanpage qua Meta Graph API (100% English, theo chuẩn t6)
+   */
+  async ztteam_bulkApplyDescriptions(userId: string, body: {
+    pageIds: string[];
+    bioTemplate?: string;
+    descTemplate?: string;
+    theme?: string;
+  }) {
+    const { pageIds, bioTemplate, descTemplate, theme = 'story_narrative' } = body;
+    if (!pageIds || pageIds.length === 0) {
+      throw new BadRequestException('Vui lòng chọn ít nhất 1 Fanpage để cập nhật mô tả');
+    }
+
+    const pages = await this.prisma.ztteam_pages.findMany({
+      where: {
+        OR: [
+          { id: { in: pageIds } },
+          { fb_page_id: { in: pageIds } }
+        ],
+        is_active: true
+      }
+    });
+
+    this.logger.log(`[bulkApplyDescriptions] Bắt đầu cập nhật Bio & Mô tả cho ${pageIds.length} Page ID (khớp ${pages.length} Page trong DB). Theme: ${theme}`);
+
+    if (pages.length === 0) {
+      return {
+        success: false,
+        total: 0,
+        successCount: 0,
+        failCount: 0,
+        message: 'Không tìm thấy Fanpage nào phù hợp trong hệ thống để cập nhật.'
+      };
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    const errors: string[] = [];
+
+    for (const page of pages) {
+      const pageBio = (bioTemplate || (page as any).branding_bio || '')
+        .replace(/\{PAGE_NAME\}/g, page.name)
+        .replace(/\{CATEGORY\}/g, page.category || 'Story')
+        .replace(/\{THEME\}/g, theme);
+
+      const pageDesc = (descTemplate || (page as any).branding_description || '')
+        .replace(/\{PAGE_NAME\}/g, page.name)
+        .replace(/\{CATEGORY\}/g, page.category || 'Story')
+        .replace(/\{THEME\}/g, theme);
+
+      // Lưu cơ sở dữ liệu
+      await this.prisma.ztteam_pages.update({
+        where: { id: page.id },
+        data: {
+          branding_bio: pageBio || null,
+          branding_description: pageDesc || null,
+          branding_custom_bio_template: bioTemplate || null,
+          branding_custom_desc_template: descTemplate || null,
+        } as any
+      });
+
+      // Đẩy lên Meta Graph API
+      if (page.page_token_encrypted && (pageBio || pageDesc)) {
+        try {
+          const updateParams: any = { access_token: page.page_token_encrypted };
+          if (pageBio) {
+            updateParams.about = pageBio.slice(0, 255);
+            updateParams.bio = pageBio.slice(0, 101);
+          }
+          if (pageDesc) updateParams.description = pageDesc;
+
+          await firstValueFrom(
+            this.httpService.post(
+              `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+              null,
+              { params: updateParams }
+            )
+          );
+          successCount++;
+        } catch (err: any) {
+          // Thử lại nếu trang cổ điển không hỗ trợ tham số bio
+          try {
+            const fallbackParams: any = { access_token: page.page_token_encrypted };
+            if (pageBio) fallbackParams.about = pageBio.slice(0, 255);
+            if (pageDesc) fallbackParams.description = pageDesc;
+            await firstValueFrom(
+              this.httpService.post(
+                `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+                null,
+                { params: fallbackParams }
+              )
+            );
+            successCount++;
+          } catch (retryErr: any) {
+            failCount++;
+            errors.push(`${page.name}: ${retryErr.response?.data?.error?.message || retryErr.message}`);
+          }
+        }
+      } else {
+        successCount++;
+      }
+    }
+
+    return {
+      success: true,
+      total: pages.length,
+      successCount,
+      failCount,
+      errors: errors.slice(0, 5),
+      message: `Đã cập nhật Mô tả & Tiểu sử cho ${successCount}/${pages.length} Fanpage thành công!`
     };
   }
 
@@ -4073,6 +4730,7 @@ export class ZTTeamFacebookService {
       where: { id: page.id },
       data: {
         branding_status: status,
+        branding_error: error || null,
         branding_error_log: error || null,
         branding_updated_at: new Date(),
       } as any
