@@ -2,14 +2,49 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useZTTeamFacebookStore } from '../stores/facebookStore';
 import { useUIStore } from '../stores/uiStore';
-import { LineChart, Line, AreaChart, Area, ResponsiveContainer, YAxis, Tooltip } from 'recharts';
 import { ztteam_decodeHtmlEntity } from '../utils/stringUtils';
 import api from '../services/api';
 import CustomDropdown from '../components/CustomDropdown';
 import { useWordpressStore } from '../stores/wordpressStore';
 
-/** Component FanpageCard chuẩn Grid Card tích hợp 3 biểu đồ xu hướng sparkline mini */
-function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleToggleActive, isSelected, onToggleSelect }: any) {
+/** Component vẽ sparkline SVG siêu nhẹ, mượt mà và không tốn tài nguyên ResizeObserver của Recharts */
+const MiniSparkline = React.memo(({ data, strokeColor, fillColor, id }: { data: { value: number }[]; strokeColor: string; fillColor: string; id: string }) => {
+  if (!data || data.length === 0) {
+    return <div className="h-full flex items-center justify-center text-[9px] text-fb-text-muted italic">---</div>;
+  }
+  const values = data.map(d => Number(d.value) || 0);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const w = 100;
+  const h = 36;
+  const pad = 2;
+
+  const points = values.map((val, idx) => {
+    const x = (idx / (values.length - 1 || 1)) * w;
+    const y = h - pad - ((val - min) / range) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  const pathD = `M ${points.join(' L ')}`;
+  const areaD = `${pathD} L ${w},${h} L 0,${h} Z`;
+
+  return (
+    <svg className="w-full h-full overflow-hidden block" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+      <defs>
+        <linearGradient id={`grad-${id}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={fillColor} stopOpacity={0.4} />
+          <stop offset="100%" stopColor={fillColor} stopOpacity={0.0} />
+        </linearGradient>
+      </defs>
+      <path d={areaD} fill={`url(#grad-${id})`} />
+      <path d={pathD} fill="none" stroke={strokeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+});
+
+/** Component FanpageCard chuẩn Grid Card tích hợp 3 biểu đồ xu hướng sparkline mini siêu nhẹ */
+const FanpageCard = React.memo(function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleToggleActive, isSelected, onToggleSelect, index = 0 }: any) {
   const navigate = useNavigate();
   const { ztteam_getPageReport, ztteam_deletePage } = useZTTeamFacebookStore();
   const { ztteam_showToast, ztteam_showConfirm } = useUIStore();
@@ -31,9 +66,18 @@ function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleTog
 
   useEffect(() => {
     if (!isExpired) {
-      ztteam_getPageReport(page.id).then(data => setInsights(data));
+      let isMounted = true;
+      const timer = setTimeout(() => {
+        ztteam_getPageReport(page.id).then(data => {
+          if (isMounted) setInsights(data);
+        });
+      }, Math.min(index * 25, 800));
+      return () => {
+        isMounted = false;
+        clearTimeout(timer);
+      };
     }
-  }, [page.id, isExpired]);
+  }, [page.id, isExpired, index]);
 
   /** Xử lý dữ liệu chuỗi 28 ngày cho 3 mini sparklines */
   let viewsChartData: any[] = [];
@@ -455,22 +499,7 @@ function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleTog
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Lượt xem
             </span>
             <div className="h-9 w-full">
-              {viewsChartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={viewsChartData} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-                    <defs>
-                      <linearGradient id={`grad-views-${page.id}`} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#34d399" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <YAxis hide domain={['dataMin - 1', 'dataMax + 1']} />
-                    <Area type="monotone" dataKey="value" stroke="#34d399" strokeWidth={1.5} fillOpacity={1} fill={`url(#grad-views-${page.id})`} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-[9px] text-fb-text-muted italic">---</div>
-              )}
+              <MiniSparkline data={viewsChartData} strokeColor="#34d399" fillColor="#34d399" id={`views-${page.id}`} />
             </div>
           </div>
 
@@ -480,22 +509,7 @@ function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleTog
               <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span> Theo dõi
             </span>
             <div className="h-9 w-full">
-              {followsChartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={followsChartData} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-                    <defs>
-                      <linearGradient id={`grad-follows-${page.id}`} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <YAxis hide domain={['dataMin - 1', 'dataMax + 1']} />
-                    <Area type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={1.5} fillOpacity={1} fill={`url(#grad-follows-${page.id})`} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-[9px] text-fb-text-muted italic">---</div>
-              )}
+              <MiniSparkline data={followsChartData} strokeColor="#22d3ee" fillColor="#22d3ee" id={`follows-${page.id}`} />
             </div>
           </div>
 
@@ -505,22 +519,7 @@ function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleTog
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Tương tác
             </span>
             <div className="h-9 w-full">
-              {engChartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={engChartData} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-                    <defs>
-                      <linearGradient id={`grad-eng-${page.id}`} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#fbbf24" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#fbbf24" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <YAxis hide domain={['dataMin - 1', 'dataMax + 1']} />
-                    <Area type="monotone" dataKey="value" stroke="#fbbf24" strokeWidth={1.5} fillOpacity={1} fill={`url(#grad-eng-${page.id})`} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-[9px] text-fb-text-muted italic">---</div>
-              )}
+              <MiniSparkline data={engChartData} strokeColor="#fbbf24" fillColor="#fbbf24" id={`eng-${page.id}`} />
             </div>
           </div>
         </div>
@@ -581,7 +580,7 @@ function FanpageCard({ page, isExpired, testingPageId, handleTestPost, handleTog
       </div>
     </div>
   );
-}
+});
 
 export default function FacebookPages() {
   const {
@@ -1479,9 +1478,10 @@ export default function FacebookPages() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-              {currentTabPages.map(page => (
+              {currentTabPages.map((page, index) => (
                 <FanpageCard
                   key={page.id}
+                  index={index}
                   page={page}
                   isExpired={page.status === 'expired'}
                   testingPageId={testingPageId}

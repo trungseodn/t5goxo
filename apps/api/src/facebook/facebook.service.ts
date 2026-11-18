@@ -5,6 +5,7 @@ import { TelegramService } from '../telegram/telegram.service';
 import { ZTTeamAIService } from '../ai/ai.service';
 import { ZTTeamStoryTestService } from '../story-test/story-test.service';
 import { firstValueFrom } from 'rxjs';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class ZTTeamFacebookService {
@@ -12,6 +13,7 @@ export class ZTTeamFacebookService {
   private readonly API_VERSION = 'v25.0';
   private lastBrandingWorkerPingAt: Date | null = null;
   private lastBrandingWorkerName: string | null = null;
+  private insightsCache = new Map<string, { data: any; expiresAt: number }>();
 
   ztteam_recordBrandingWorkerHeartbeat(workerName?: string) {
     this.lastBrandingWorkerPingAt = new Date();
@@ -517,7 +519,12 @@ export class ZTTeamFacebookService {
     }));
   }
 
-  private async ztteam_computePageTimesAndNextVideo(page: any) {
+  private async ztteam_computePageTimesAndNextVideo(page: any, prefetched?: {
+    lastReel?: any;
+    lastImage?: any;
+    nextReel?: any;
+    templateName?: string | null;
+  }) {
     let lastRenderTime = page.last_auto_scan_at ? page.last_auto_scan_at : null;
     let nextRenderTime = null;
     if (page.auto_create_enabled) {
@@ -528,12 +535,12 @@ export class ZTTeamFacebookService {
       }
     }
 
-    const lastPublishedReel = await this.prisma.ztteam_reels.findFirst({
+    const lastPublishedReel = prefetched ? prefetched.lastReel : await this.prisma.ztteam_reels.findFirst({
       where: { page_id: page.id, status: 'POSTED' },
       orderBy: { updated_at: 'desc' }
     });
     
-    const lastPublishedImage = await this.prisma.ztteam_images.findFirst({
+    const lastPublishedImage = prefetched ? prefetched.lastImage : await this.prisma.ztteam_images.findFirst({
       where: { page_id: page.id, is_posted: true },
       orderBy: { posted_at: 'desc' }
     });
@@ -599,13 +606,15 @@ export class ZTTeamFacebookService {
       nextPublishTime = ztteam_foundTime;
     }
 
-    const nextReelToPublish = await this.prisma.ztteam_reels.findFirst({
+    const nextReelToPublish = prefetched ? prefetched.nextReel : await this.prisma.ztteam_reels.findFirst({
       where: { page_id: page.id, status: 'COMPLETED', is_posted: false },
       orderBy: { created_at: 'asc' }
     });
 
     let templateName = null;
-    if (page.default_reel_template_id) {
+    if (prefetched) {
+      templateName = prefetched.templateName || null;
+    } else if (page.default_reel_template_id) {
       const tpl = await this.prisma.ztteam_templates.findUnique({
         where: { id: page.default_reel_template_id },
         select: { name: true }
@@ -676,14 +685,72 @@ export class ZTTeamFacebookService {
       /** Bỏ qua lỗi phụ */
     }
 
+    const pageIds = pages.map(p => p.id);
+    const pendingImagesMap = new Map<string, number>();
+    const pendingReelsMap = new Map<string, number>();
+    const templateMap = new Map<string, string>();
+    const lastReelMap = new Map<string, any>();
+    const lastImageMap = new Map<string, any>();
+    const nextReelMap = new Map<string, any>();
+
+    if (pageIds.length > 0) {
+      try {
+        const [pendingImagesGroup, pendingReelsGroup, templates, lastPostedReels, lastPostedImages, nextReels] = await Promise.all([
+          this.prisma.ztteam_images.groupBy({
+            by: ['page_id'],
+            where: { page_id: { in: pageIds }, is_posted: false, status: { in: ['QUEUED', 'RENDERING', 'COMPLETED'] } },
+            _count: { id: true }
+          }),
+          this.prisma.ztteam_reels.groupBy({
+            by: ['page_id'],
+            where: { page_id: { in: pageIds }, is_posted: false, status: { in: ['QUEUED', 'RENDERING', 'COMPLETED'] } },
+            _count: { id: true }
+          }),
+          this.prisma.ztteam_templates.findMany({ select: { id: true, name: true } }),
+          this.prisma.$queryRaw<Array<{ page_id: string; updated_at: Date; wp_post_title: string; ai_caption: string }>>`
+            SELECT DISTINCT ON (page_id) page_id, updated_at, wp_post_title, ai_caption
+            FROM ztteam_reels
+            WHERE page_id IN (${Prisma.join(pageIds)}) AND status = 'POSTED'
+            ORDER BY page_id, updated_at DESC
+          `,
+          this.prisma.$queryRaw<Array<{ page_id: string; posted_at: Date; wp_post_title: string; ai_caption: string }>>`
+            SELECT DISTINCT ON (page_id) page_id, posted_at, wp_post_title, ai_caption
+            FROM ztteam_images
+            WHERE page_id IN (${Prisma.join(pageIds)}) AND is_posted = true
+            ORDER BY page_id, posted_at DESC
+          `,
+          this.prisma.$queryRaw<Array<{ page_id: string; id: string; wp_post_title: string }>>`
+            SELECT DISTINCT ON (page_id) page_id, id, wp_post_title
+            FROM ztteam_reels
+            WHERE page_id IN (${Prisma.join(pageIds)}) AND status = 'COMPLETED' AND is_posted = false
+            ORDER BY page_id, created_at ASC
+          `
+        ]);
+
+        pendingImagesGroup.forEach(g => { if (g.page_id) pendingImagesMap.set(g.page_id, g._count.id); });
+        pendingReelsGroup.forEach(g => { if (g.page_id) pendingReelsMap.set(g.page_id, g._count.id); });
+        templates.forEach(t => templateMap.set(t.id, t.name));
+        lastPostedReels.forEach(r => lastReelMap.set(r.page_id, r));
+        lastPostedImages.forEach(i => lastImageMap.set(i.page_id, i));
+        nextReels.forEach(r => nextReelMap.set(r.page_id, r));
+      } catch (batchErr) {
+        this.logger.warn('Error batch fetching page auxiliary data, fallback to single queries', batchErr);
+      }
+    }
+
     const result = await Promise.all(pages.map(async p => {
-      const times = await this.ztteam_computePageTimesAndNextVideo(p);
+      const times = await this.ztteam_computePageTimesAndNextVideo(p, {
+        lastReel: lastReelMap.get(p.id),
+        lastImage: lastImageMap.get(p.id),
+        nextReel: nextReelMap.get(p.id),
+        templateName: p.default_reel_template_id ? templateMap.get(p.default_reel_template_id) : null
+      });
 
       /** ZTTeam: Đếm số lượng bài viết đang chờ xuất bản trong hàng đợi */
-      const pendingImagesCount = await this.prisma.ztteam_images.count({
+      const pendingImagesCount = pendingImagesMap.has(p.id) ? (pendingImagesMap.get(p.id) || 0) : await this.prisma.ztteam_images.count({
         where: { page_id: p.id, is_posted: false, status: { in: ['QUEUED', 'RENDERING', 'COMPLETED'] } }
       });
-      const pendingReelsCount = await this.prisma.ztteam_reels.count({
+      const pendingReelsCount = pendingReelsMap.has(p.id) ? (pendingReelsMap.get(p.id) || 0) : await this.prisma.ztteam_reels.count({
         where: { page_id: p.id, is_posted: false, status: { in: ['QUEUED', 'RENDERING', 'COMPLETED'] } }
       });
 
@@ -1285,6 +1352,12 @@ export class ZTTeamFacebookService {
   }
 
   async ztteam_getPageInsights(pageId: string, userId?: string) {
+    const cacheKey = `insights_${pageId}`;
+    const cached = this.insightsCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+
     const page = await this.prisma.ztteam_pages.findFirst({
       where: { OR: [{ id: pageId }, { fb_page_id: pageId }] },
       include: { fb_account: true }
@@ -1298,30 +1371,48 @@ export class ZTTeamFacebookService {
 
     try {
       const metrics = ['page_media_view', 'page_total_media_view_unique', 'page_views_total', 'page_post_engagements', 'page_daily_follows', 'page_fans'];
-      const results = [];
+      let results: any[] = [];
 
-      for (const metric of metrics) {
-        try {
-          const res = await firstValueFrom(
-            this.httpService.get(
-              `https://graph.facebook.com/${this.API_VERSION}/${realFbPageId}/insights`,
-              {
-                params: { metric, period: 'day', date_preset: 'last_28d', access_token: page.page_token_encrypted }
-              }
-            )
-          );
-          if (res.data?.data?.length > 0) {
-            results.push(res.data.data[0]);
+      try {
+        const res = await firstValueFrom(
+          this.httpService.get(
+            `https://graph.facebook.com/${this.API_VERSION}/${realFbPageId}/insights`,
+            {
+              params: { metric: metrics.join(','), period: 'day', date_preset: 'last_28d', access_token: page.page_token_encrypted }
+            }
+          )
+        );
+        if (res.data?.data?.length > 0) {
+          results = res.data.data;
+        }
+      } catch (singleErr: any) {
+        // Fallback to individual metrics if Facebook API balks on combined query
+        for (const metric of metrics) {
+          try {
+            const res = await firstValueFrom(
+              this.httpService.get(
+                `https://graph.facebook.com/${this.API_VERSION}/${realFbPageId}/insights`,
+                {
+                  params: { metric, period: 'day', date_preset: 'last_28d', access_token: page.page_token_encrypted }
+                }
+              )
+            );
+            if (res.data?.data?.length > 0) {
+              results.push(res.data.data[0]);
+            }
+          } catch (e: any) {
+            // ignore individual metric failure
           }
-        } catch (e: any) {
-          this.logger.warn(`Failed metric ${metric}:`, e.response?.data?.error?.message);
         }
       }
 
+      // Cache successful response for 1 hour
+      this.insightsCache.set(cacheKey, { data: results, expiresAt: Date.now() + 3600 * 1000 });
       return results;
     } catch (error: any) {
       this.logger.warn('Error fetching Facebook insights, returning empty data.', error.response?.data || error.message);
-      /** Fallback: return mock/empty data so frontend doesn't break */
+      // Cache empty result for 10 minutes to avoid hammering Facebook on dead tokens
+      this.insightsCache.set(cacheKey, { data: [], expiresAt: Date.now() + 600 * 1000 });
       return [];
     }
   }

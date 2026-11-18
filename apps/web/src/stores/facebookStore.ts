@@ -88,6 +88,8 @@ declare global {
   }
 }
 
+const ztteam_pageReportCache = new Map<string, any>();
+
 export const useZTTeamFacebookStore = create<ZTTeamFacebookState>((set, get) => ({
   isConnected: false,
   fbAccountId: null,
@@ -98,9 +100,6 @@ export const useZTTeamFacebookStore = create<ZTTeamFacebookState>((set, get) => 
   error: null,
 
   ztteam_checkLoginStatus: async () => {
-    /** Load pages from backend DB immediately */
-    await get().ztteam_fetchPagesFromDB();
-
     return new Promise((resolve) => {
       if (!window.FB) {
         resolve();
@@ -283,9 +282,14 @@ export const useZTTeamFacebookStore = create<ZTTeamFacebookState>((set, get) => 
   },
 
   ztteam_getPageReport: async (pageId: string) => {
+    if (ztteam_pageReportCache.has(pageId)) {
+      return ztteam_pageReportCache.get(pageId);
+    }
     try {
       const response = await api.get(`/facebook/pages/${pageId}/report`);
-      return response.data;
+      const data = response.data || [];
+      ztteam_pageReportCache.set(pageId, data);
+      return data;
     } catch (error: any) {
       console.error('Error fetching page report', error);
       return [];
