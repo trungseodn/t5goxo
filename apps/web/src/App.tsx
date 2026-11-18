@@ -19,6 +19,7 @@ import MetaBMGuidePage from './pages/MetaBMGuidePage'
 import ReelTemplateLibrary from './pages/ReelTemplateLibrary'
 import PageBrandingMuse from './pages/PageBrandingMuse'
 import BrandingStudio from './pages/BrandingStudio'
+import ErrorBoundary from './components/ErrorBoundary'
 
 import { useZTTeamAuthStore } from './stores/authStore'
 import './index.css'
@@ -35,7 +36,8 @@ function ZTTeamProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function App() {
   return (
-    <BrowserRouter>
+    <ErrorBoundary fallbackTitle="Ứng dụng gặp sự cố">
+      <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route 
@@ -68,6 +70,7 @@ function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+    </ErrorBoundary>
   )
 }
 

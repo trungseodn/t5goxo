@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useZTTeamAuthStore } from '../stores/authStore';
 import { useZTTeamFacebookStore } from '../stores/facebookStore';
 import { Outlet, Link, useLocation } from 'react-router-dom';
+import ErrorBoundary from './ErrorBoundary';
 import UIProvider from './UIProvider';
 import { useUIStore } from '../stores/uiStore';
 import { ztteam_decodeHtmlEntity } from '../utils/stringUtils';
@@ -224,7 +225,9 @@ export default function Layout() {
             <main className="w-full lg:pl-[260px] pt-16 min-h-screen bg-fb-bg flex flex-col">
                 <div className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">
                     <div className="mx-auto space-y-6">
-                        <Outlet />
+                        <ErrorBoundary fallbackTitle="Không thể tải phân hệ này">
+                            <Outlet />
+                        </ErrorBoundary>
                     </div>
                 </div>
             </main>
