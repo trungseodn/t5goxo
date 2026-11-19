@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramService } from '../telegram/telegram.service';
-import { ztteam_getReelsPath, ztteam_getImagesPath } from '../common/ztteam_storage.util';
+import { ztteam_getReelsPath, ztteam_getImagesPath, ztteam_getStorageRoot } from '../common/ztteam_storage.util';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -64,12 +64,41 @@ export class ZTTeamStorageCleanupCron {
       }
 
       this.logger.log(`Cleanup complete. Deleted ${deletedReelsCount} old posted reels.`);
+
+      /** Cleanup Posted Videos in ztteam_images */
+      const oldImages = await this.prisma.ztteam_images.findMany({
+        where: {
+          is_posted: true,
+          video_url: { not: null, notIn: ['DELETED', ''] },
+          posted_at: { lt: cutoffDate },
+        },
+      });
+
+      const storageRoot = ztteam_getStorageRoot();
+      for (const img of oldImages) {
+        if (img.video_url && img.video_url.startsWith('/storage/')) {
+          const relPath = img.video_url.replace(/^\/storage\//, '');
+          const absPath = path.join(storageRoot, relPath);
+          if (fs.existsSync(absPath)) {
+            try {
+              fs.unlinkSync(absPath);
+            } catch (err) {}
+          }
+        }
+        await this.prisma.ztteam_images.update({
+          where: { id: img.id },
+          data: { video_url: 'DELETED' },
+        });
+        deletedImagesCount++;
+      }
+      this.logger.log(`Cleanup complete. Deleted ${deletedImagesCount} old posted video files from ztteam_images.`);
       
-      if (deletedReelsCount > 0) {
+      const totalDeleted = deletedReelsCount + deletedImagesCount;
+      if (totalDeleted > 0) {
         this.telegramService.ztteam_sendMessage(
           `🧹 *[DỌN DẸP Ổ CỨNG ĐỊNH KỲ]*\n\n` +
-          `Đã xóa tự động các file video/audio cũ hơn ${retentionDays} ngày:\n` +
-          `• Video đã đăng: ${deletedReelsCount} bài`
+          `Đã xóa tự động các file video cũ hơn ${retentionDays} ngày:\n` +
+          `• Video đã đăng: ${totalDeleted} bài`
         );
       }
 
