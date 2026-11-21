@@ -277,7 +277,7 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
           if (!text) continue;
 
           // Trích xuất tất cả URLs có trong text (hỗ trợ cả XML <loc>... và Markdown [url](url))
-          const allUrls = [...text.matchAll(/https?:\/\/[^\s\)\<\>\"']+/g)].map(m => m[0]);
+          const allUrls = [...text.matchAll(/https?:\/\/[^\s\)\<\>\"'\]\[]+/g)].map(m => m[0].replace(/[\]\)\,\.]+$/, ''));
           if (allUrls.length === 0) continue;
 
           // Kiểm tra xem có sitemap con cho bài viết không (VD: sitemap-posts.xml, post-sitemap.xml, wp-sitemap-posts-post-*.xml)
@@ -287,7 +287,7 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
               try {
                 const subText = await fetchWithFallback(subSm);
                 if (!subText) continue;
-                const subUrls = [...subText.matchAll(/https?:\/\/[^\s\)\<\>\"']+/g)].map(m => m[0]);
+                const subUrls = [...subText.matchAll(/https?:\/\/[^\s\)\<\>\"'\]\[]+/g)].map(m => m[0].replace(/[\]\)\,\.]+$/, ''));
                 const articleUrls = subUrls.filter(u => !u.endsWith('.xml') && this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
                 if (articleUrls.length > 0) {
                   return [...new Set(articleUrls)];
