@@ -56,11 +56,48 @@ export class ZTTeamFetcherService {
   }
 
   private ztteam_extractOgImage($: any): string | null {
-    return (
+    const metaImg = (
       $('meta[property="og:image"]').attr("content") ||
+      $('meta[property="og:image:url"]').attr("content") ||
       $('meta[name="twitter:image"]').attr("content") ||
+      $('meta[name="twitter:image:src"]').attr("content") ||
+      $('link[rel="image_src"]').attr("href") ||
       null
     );
+    if (metaImg && typeof metaImg === 'string' && metaImg.startsWith('http')) {
+      return metaImg.trim();
+    }
+
+    /** Fallback: Check featured image selectors on the page */
+    const featuredSelectors = [
+      'img.wp-post-image',
+      '.wp-post-image',
+      '.featured-image img',
+      '.post-thumbnail img',
+      '.entry-thumbnail img',
+      '.article-image img',
+      'figure.post-thumbnail img',
+      '.attachment-post-thumbnail',
+      'article figure img',
+      'article img',
+      '.entry-content img',
+      '.post-content img',
+    ];
+
+    for (const sel of featuredSelectors) {
+      const el = $(sel).first();
+      if (el.length) {
+        const src = el.attr('src') || el.attr('data-src') || el.attr('data-lazy-src') || el.attr('data-original');
+        if (src && typeof src === 'string' && src.startsWith('http')) {
+          const lower = src.toLowerCase();
+          if (!lower.includes('avatar') && !lower.includes('logo') && !lower.includes('icon') && !lower.includes('gravatar')) {
+            return src.trim();
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   private ztteam_extractSiteName($: any): string | null {
@@ -221,6 +258,16 @@ export class ZTTeamFetcherService {
         if (baseSlug.includes('-') && baseSlug.length >= 8) {
           return true;
         }
+      }
+
+      /** Mẫu E: Định dạng bài viết blog / post / story / article của CMS thông dụng */
+      if (/^\/(?:post|posts|blog|blogs|story|stories|article|articles|entry|read|parish)\/([a-z0-9\-_]+)$/i.test(pathLower)) {
+        return true;
+      }
+
+      /** Mẫu F: ID số sau /post/, /p/, /item/ (ví dụ: /post/1/, /post/12/, /p/99/) */
+      if (/^\/(?:post|p|item)\/\d+$/i.test(pathLower)) {
+        return true;
       }
 
       return false;
@@ -784,20 +831,34 @@ export class ZTTeamFetcherService {
       let images: string[] = [];
       const content$ = cheerio.load(contentHtml);
       content$('img').each((_, el) => {
-        const src = content$(el).attr('src') || content$(el).attr('data-src');
+        const src = content$(el).attr('src') || content$(el).attr('data-src') || content$(el).attr('data-lazy-src');
         if (src && src.startsWith('http')) {
           images.push(src);
         }
       });
 
-      if (image) {
+      if (images.length === 0) {
+        $('article img, .post-content img, .entry-content img, main img').each((_, el) => {
+          const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-lazy-src');
+          if (src && src.startsWith('http')) {
+            const lower = src.toLowerCase();
+            if (!lower.includes('avatar') && !lower.includes('logo') && !lower.includes('icon') && !lower.includes('gravatar')) {
+              images.push(src);
+            }
+          }
+        });
+      }
+
+      const finalFeaturedImage = image || (images.length > 0 ? images[0] : null);
+
+      if (finalFeaturedImage) {
         const getBaseImg = (u: string) => {
           try {
             const urlObj = new URL(u);
             return urlObj.origin + urlObj.pathname.replace(/-\d+x\d+(?=\.[a-zA-Z0-9]+$)/, '');
           } catch(e) { return u; }
         };
-        const baseOg = getBaseImg(image);
+        const baseOg = getBaseImg(finalFeaturedImage);
         images = images.filter(img => getBaseImg(img) !== baseOg);
       }
 
@@ -817,7 +878,7 @@ export class ZTTeamFetcherService {
 
       return {
         title,
-        image,
+        image: finalFeaturedImage,
         images: [...new Set(images)],
         content,
         contentHtml,

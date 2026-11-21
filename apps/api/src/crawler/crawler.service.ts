@@ -147,7 +147,7 @@ export class ZTTeamCrawlerService {
           this.logger.log(`AI 2K image generated: ${image2kUrl}`);
         } catch (aiErr: any) {
           this.logger.warn(`Lỗi tạo ảnh AI (${aiErr.message})`);
-          throw new Error(`[KHÔNG ĐỦ ĐIỀU KIỆN] Bài viết không có ảnh gốc dự phòng và AI không thể tạo ảnh (${aiErr.message})`);
+          throw new Error(`[KHÔNG ĐỦ ĐIỀU KIỆN ẢNH] Bài viết không có ảnh gốc dự phòng và AI không thể tạo ảnh (${aiErr.message})`);
         }
       }
     } else {

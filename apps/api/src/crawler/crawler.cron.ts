@@ -210,6 +210,10 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         }
       }
     } catch (htmlErr: any) {
+      if (htmlErr.message?.includes('404')) {
+        this.logger.log(`Page ${pageUrl} returned 404 (End of pagination).`);
+        return [];
+      }
       this.logger.warn(`Direct HTML scrape failed for ${pageUrl}: ${htmlErr.message}. Attempting Smart Proxy extraction...`);
       try {
         const proxyLinks = await this.fetcherService.ztteam_extractArticleLinksViaProxy(pageUrl);
@@ -224,95 +228,203 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
     return Array.from(extractedSet).slice(0, 15);
   }
 
-  private async ztteam_crawlSource(source: any) {
-    /** 1. Quét phân trang động linh hoạt (Dynamic Flexible Pagination) */
-    const urlsToFetch: string[] = [];
-    let maxScanPages = 50; /** Mặc định quét sâu 50 trang, tối đa 500 trang theo cấu hình nguồn */
+  /**
+   * ZTTeam: Tự động phát hiện và bóc tách link bài viết từ Sitemap của website nguồn.
+   * Khắc phục triệt để tình trạng website không có phân trang /page/N/ hoặc bị thiếu bài viết.
+   */
+  private async ztteam_extractArticleLinksFromSitemap(sourceUrl: string): Promise<string[]> {
     try {
-      const rules = JSON.parse(source.extract_rules_json || '{}');
-      if (rules.maxScanPages && Number(rules.maxScanPages) > 0) {
-        maxScanPages = Math.max(1, Math.min(500, parseInt(rules.maxScanPages, 10)));
+      const baseUrl = new URL(sourceUrl);
+      const origin = baseUrl.origin;
+      const sitemapCandidates = [
+        `${origin}/sitemap-posts.xml`,
+        `${origin}/wp-sitemap-posts-post-1.xml`,
+        `${origin}/post-sitemap.xml`,
+        `${origin}/sitemap.xml`,
+        `${origin}/sitemap_index.xml`,
+      ];
+
+      for (const smUrl of sitemapCandidates) {
+        try {
+          const res = await fetch(smUrl, {
+            signal: AbortSignal.timeout(8000),
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Accept': 'application/xml, text/xml, */*'
+            }
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (!text.includes('<loc>')) continue;
+
+          // Kiểm tra nếu là sitemap index chứa các sitemap con
+          const subSitemaps = [...text.matchAll(/<loc>(https?:\/\/[^<]+(?:post|story|article)[^<]*\.xml)<\/loc>/gi)].map(m => m[1]);
+          if (subSitemaps.length > 0) {
+            for (const subSm of subSitemaps.slice(0, 3)) {
+              try {
+                const subRes = await fetch(subSm, {
+                  signal: AbortSignal.timeout(8000),
+                  headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0' }
+                });
+                if (subRes.ok) {
+                  const subText = await subRes.text();
+                  const urls = [...subText.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/gi)].map(m => m[1]);
+                  const articleUrls = urls.filter(u => this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
+                  if (articleUrls.length > 0) {
+                    return articleUrls;
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+
+          // Trực tiếp URL trong sitemap
+          const urls = [...text.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/gi)].map(m => m[1]);
+          const articleUrls = urls.filter(u => this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
+          if (articleUrls.length > 0) {
+            return articleUrls;
+          }
+        } catch (e) {}
       }
     } catch (e) {}
+    return [];
+  }
 
+  private async ztteam_crawlSource(source: any) {
+    const urlsToFetch: string[] = [];
     const targetWpUrl = source.target_site?.wp_url || '';
     const sourceUrl = source.source_url || '';
     const isNewsSite = /imsb\.info|mv\.imsb\.info/i.test(targetWpUrl) || /imsb\.info|mv\.imsb\.info/i.test(sourceUrl);
     const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
 
-    for (let p = 1; p <= maxScanPages; p++) {
-      const pageUrl = this.ztteam_generatePageUrl(source.source_url, p);
-      this.logger.log(`[Trang ${p}/${maxScanPages}] Đang quét link bài viết từ nguồn: ${pageUrl}`);
-
-      const pageArticles = await this.ztteam_extractArticleLinksFromPage(pageUrl, source, p);
-
-      /** Nếu trang không có bài viết nào (404 hoặc đã hết các trang phân trang), dừng quét */
-      if (pageArticles.length === 0) {
-        this.logger.log(`[Trang ${p}] Không tìm thấy link bài viết nào (đã hết trang hoặc 404). Kết thúc quét phân trang cho ${source.source_url}.`);
-        break;
+    /** Xác định batchSize: Mặc định 3 bài/lần chạy (thay vì 1 bài), tối đa 20 bài */
+    let maxArticlesPerCycle = 3;
+    try {
+      const rules = JSON.parse(source.extract_rules_json || '{}');
+      if (rules.batchSize && Number(rules.batchSize) > 0) {
+        maxArticlesPerCycle = Math.max(1, Math.min(20, parseInt(rules.batchSize, 10)));
       }
+    } catch (e) {}
 
-      /** Kiểm tra riêng site News: nếu permalink có chứa ngày cũ hơn 5 ngày */
-      let allArticlesOnPageTooOld = isNewsSite;
+    /** BƯỚC 1: Quét Sitemap tự động nếu có */
+    try {
+      const sitemapArticles = await this.ztteam_extractArticleLinksFromSitemap(source.source_url);
+      if (sitemapArticles && sitemapArticles.length > 0) {
+        this.logger.log(`[Sitemap] Tìm thấy ${sitemapArticles.length} link bài viết từ sitemap của ${source.source_url}`);
+        for (const url of sitemapArticles) {
+          const history = await this.prisma.ztteam_crawl_history.findUnique({
+            where: { source_id_url: { source_id: source.id, url } }
+          });
+          const isAlreadyProcessed = history && (
+            history.status === 'SUCCESS' ||
+            history.status.startsWith('SKIPPED') ||
+            history.status === 'FAILED'
+          );
+          if (!isAlreadyProcessed) {
+            urlsToFetch.push(url);
+            if (urlsToFetch.length >= maxArticlesPerCycle * 5) {
+              break;
+            }
+          }
+        }
+      }
+    } catch (smErr: any) {
+      this.logger.debug(`Sitemap discovery skipped for ${source.source_url}: ${smErr.message}`);
+    }
 
-      /** Kiểm tra lịch sử xem bài nào trên trang này CHƯA được cào */
-      const unCrawledOnThisPage: string[] = [];
-      for (const url of pageArticles) {
-        if (isNewsSite) {
-          const urlDateMatch = url.match(/\b(202\d)[\/\-_](0[1-9]|1[0-2])[\/\-_](0[1-9]|[12]\d|3[01])\b/);
-          if (urlDateMatch) {
-            const articleDate = new Date(`${urlDateMatch[1]}-${urlDateMatch[2]}-${urlDateMatch[3]}`);
-            if (!isNaN(articleDate.getTime()) && (Date.now() - articleDate.getTime() > FIVE_DAYS_MS)) {
-              /** Đánh dấu bỏ qua trong history để không quét lại */
-              try {
-                await this.prisma.ztteam_crawl_history.upsert({
-                  where: { source_id_url: { source_id: source.id, url } },
-                  create: { source_id: source.id, url, status: 'SKIPPED_TOO_OLD' },
-                  update: { status: 'SKIPPED_TOO_OLD' }
-                });
-              } catch (e) {}
-              continue;
+    /** BƯỚC 2: Nếu Sitemap không có bài mới, quét phân trang động (Flexible Pagination) */
+    if (urlsToFetch.length === 0) {
+      let maxScanPages = 20;
+      try {
+        const rules = JSON.parse(source.extract_rules_json || '{}');
+        if (rules.maxScanPages && Number(rules.maxScanPages) > 0) {
+          maxScanPages = Math.max(1, Math.min(100, parseInt(rules.maxScanPages, 10)));
+        }
+      } catch (e) {}
+
+      let previousPageKey = '';
+      let consecutiveEmptyPages = 0;
+
+      for (let p = 1; p <= maxScanPages; p++) {
+        const pageUrl = this.ztteam_generatePageUrl(source.source_url, p);
+        this.logger.log(`[Trang ${p}/${maxScanPages}] Đang quét link bài viết từ nguồn: ${pageUrl}`);
+
+        const pageArticles = await this.ztteam_extractArticleLinksFromPage(pageUrl, source, p);
+
+        if (pageArticles.length === 0) {
+          consecutiveEmptyPages++;
+          if (consecutiveEmptyPages >= 2 || p === 1) {
+            this.logger.log(`[Trang ${p}] Không tìm thấy link bài viết nào (hết trang hoặc 404). Kết thúc quét phân trang cho ${source.source_url}.`);
+            break;
+          }
+          continue;
+        }
+        consecutiveEmptyPages = 0;
+
+        /** Phát hiện lặp trang (website không hỗ trợ /page/N/) */
+        const pageKey = pageArticles.slice().sort().join('|');
+        if (p > 1 && pageKey === previousPageKey) {
+          this.logger.log(`[Trang ${p}] Trùng lặp hoàn toàn với trang trước (website không hỗ trợ phân trang /page/N/). Kết thúc quét phân trang cho ${source.source_url}.`);
+          break;
+        }
+        previousPageKey = pageKey;
+
+        /** Kiểm tra riêng site News: nếu permalink có chứa ngày cũ hơn 5 ngày */
+        let allArticlesOnPageTooOld = isNewsSite;
+
+        /** Kiểm tra lịch sử xem bài nào trên trang này CHƯA được cào */
+        const unCrawledOnThisPage: string[] = [];
+        for (const url of pageArticles) {
+          if (isNewsSite) {
+            const urlDateMatch = url.match(/\b(202\d)[\/\-_](0[1-9]|1[0-2])[\/\-_](0[1-9]|[12]\d|3[01])\b/);
+            if (urlDateMatch) {
+              const articleDate = new Date(`${urlDateMatch[1]}-${urlDateMatch[2]}-${urlDateMatch[3]}`);
+              if (!isNaN(articleDate.getTime()) && (Date.now() - articleDate.getTime() > FIVE_DAYS_MS)) {
+                try {
+                  await this.prisma.ztteam_crawl_history.upsert({
+                    where: { source_id_url: { source_id: source.id, url } },
+                    create: { source_id: source.id, url, status: 'SKIPPED_TOO_OLD' },
+                    update: { status: 'SKIPPED_TOO_OLD' }
+                  });
+                } catch (e) {}
+                continue;
+              } else {
+                allArticlesOnPageTooOld = false;
+              }
             } else {
               allArticlesOnPageTooOld = false;
             }
-          } else {
-            allArticlesOnPageTooOld = false;
+          }
+
+          const history = await this.prisma.ztteam_crawl_history.findUnique({
+            where: { source_id_url: { source_id: source.id, url } }
+          });
+
+          const isAlreadyProcessed = history && (
+            history.status === 'SUCCESS' ||
+            history.status.startsWith('SKIPPED') ||
+            history.status === 'FAILED'
+          );
+
+          if (!isAlreadyProcessed) {
+            unCrawledOnThisPage.push(url);
           }
         }
 
-        const history = await this.prisma.ztteam_crawl_history.findUnique({
-          where: { source_id_url: { source_id: source.id, url } }
-        });
-
-        const isAlreadyProcessed = history && (
-          history.status === 'SUCCESS' ||
-          history.status.startsWith('SKIPPED') ||
-          history.status === 'FAILED'
-        );
-
-        if (!isAlreadyProcessed) {
-          unCrawledOnThisPage.push(url);
+        if (isNewsSite && allArticlesOnPageTooOld && pageArticles.length > 0) {
+          this.logger.log(`[Trang ${p}] Tất cả bài viết trên trang của News site (${source.source_url}) đều đã cũ hơn 5 ngày. Dừng quét sâu các trang tiếp theo.`);
+          break;
         }
-      }
 
-      /** Nếu là site News và 100% bài trên trang này đều đã cũ hơn 5 ngày, dừng quét sâu các trang sau */
-      if (isNewsSite && allArticlesOnPageTooOld && pageArticles.length > 0) {
-        this.logger.log(`[Trang ${p}] Tất cả bài viết trên trang của News site (${source.source_url}) đều đã cũ hơn 5 ngày. Dừng quét sâu các trang tiếp theo.`);
-        break;
-      }
-
-      if (unCrawledOnThisPage.length > 0) {
-        this.logger.log(`[Trang ${p}] Phát hiện ${unCrawledOnThisPage.length} bài viết MỚI chưa cào từ ${source.source_url}. Bắt đầu xử lý!`);
-        urlsToFetch.push(...unCrawledOnThisPage);
-        /** 
-         * NGUYÊN TẮC:
-         * - Nếu Trang 1 có bài mới: Cào ngay bài mới của Trang 1, dừng quét (break).
-         * - Nếu Trang 1 đã cào hết (100% trong history): Vòng lặp tự động sang Trang 2, Trang 3...
-         * - Khi tìm thấy trang có bài chưa cào, dừng quét để cào trang đó trước.
-         */
-        break;
-      } else {
-        this.logger.log(`[Trang ${p}] Đã cào hết toàn bộ bài viết (${pageArticles.length}/${pageArticles.length} đã có trong lịch sử). Tự động chuyển sang Trang ${p + 1}...`);
+        if (unCrawledOnThisPage.length > 0) {
+          this.logger.log(`[Trang ${p}] Phát hiện ${unCrawledOnThisPage.length} bài viết MỚI chưa cào từ ${source.source_url}.`);
+          urlsToFetch.push(...unCrawledOnThisPage);
+          if (urlsToFetch.length >= maxArticlesPerCycle) {
+            break;
+          }
+        } else {
+          this.logger.log(`[Trang ${p}] Đã cào hết toàn bộ bài viết (${pageArticles.length}/${pageArticles.length} đã có trong lịch sử). Tự động chuyển sang Trang ${p + 1}...`);
+        }
       }
     }
 
@@ -325,17 +437,8 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
     /** Mark sync time immediately to lock the crawl interval (e.g. 6 hours) */
     await this.ztteam_markSourceSyncTime(source.id);
 
-    /** 2. Fetch data for un-crawled URLs: Batch size configured in extract_rules_json (default 1) */
+    /** 2. Fetch data for un-crawled URLs: Batch size configured in extract_rules_json (default 3) */
     let processedCount = 0;
-    let maxArticlesPerCycle = 1;
-
-    try {
-      const rules = JSON.parse(source.extract_rules_json || '{}');
-      if (rules.batchSize && Number(rules.batchSize) > 0) {
-        maxArticlesPerCycle = Math.max(1, Math.min(10, parseInt(rules.batchSize, 10)));
-      }
-    } catch (e) {}
-
     let attemptCount = 0;
 
     for (const url of urlsToFetch) {
@@ -388,15 +491,13 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         processedCount++;
         attemptCount++;
       } catch (err: any) {
-        /** ZTTeam: Kiểm tra nếu lỗi do vi phạm cổng kiểm duyệt bài viết hoặc bài viết không đủ điều kiện ảnh/nội dung */
+        /** ZTTeam: Kiểm tra nếu lỗi do vi phạm cổng kiểm duyệt bài viết */
         const isNotStory = err.message?.includes('[KHÔNG PHẢI STORY]');
         const isTooOld = err.message?.includes('[QUÁ HẠN 5 NGÀY]');
-        const isConditionUnmet = isNotStory || isTooOld ||
-                                 err.message?.includes('Không phải bài viết hợp lệ') ||
-                                 err.message?.includes('Nội dung không đạt tiêu chuẩn bài viết') ||
-                                 err.message?.includes('[KHÔNG ĐỦ ĐIỀU KIỆN]');
+        const isNotArticle = err.message?.includes('Không phải bài viết hợp lệ') ||
+                             err.message?.includes('Nội dung không đạt tiêu chuẩn bài viết');
 
-        if (isConditionUnmet) {
+        if (isNotStory || isTooOld || isNotArticle) {
           const skipStatus = isNotStory ? 'SKIPPED_NOT_STORY' : (isTooOld ? 'SKIPPED_TOO_OLD' : 'SKIPPED_NOT_ARTICLE');
           this.logger.log(`[TỰ ĐỘNG BỎ QUA] URL không đáp ứng điều kiện (${skipStatus}): ${url} (${err.message})`);
           try {
