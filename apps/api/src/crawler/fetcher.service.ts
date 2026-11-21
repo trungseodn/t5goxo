@@ -160,7 +160,6 @@ export class ZTTeamFetcherService {
         '/profile/',
         '/members/',
         '/page/',
-        '/p/',
         '/feed',
         '/rss',
         '/atom',
@@ -247,8 +246,8 @@ export class ZTTeamFetcherService {
 
       /** Mẫu C: Slug chữ chuẩn (có dấu gạch ngang '-') */
       const hyphenCount = (lastSegment.match(/-/g) || []).length;
-      /** Một tiêu đề bài viết thông thường có ít nhất 2 dấu gạch nối (>= 3 từ) và dài >= 12 ký tự */
-      if (hyphenCount >= 2 && lastSegment.length >= 12) {
+      /** Một tiêu đề bài viết thông thường có ít nhất 1 dấu gạch nối và dài >= 8 ký tự */
+      if (hyphenCount >= 1 && lastSegment.length >= 8) {
         return true;
       }
 

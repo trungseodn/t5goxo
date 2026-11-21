@@ -230,7 +230,7 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
 
   /**
    * ZTTeam: Tự động phát hiện và bóc tách link bài viết từ Sitemap của website nguồn.
-   * Khắc phục triệt để tình trạng website không có phân trang /page/N/ hoặc bị thiếu bài viết.
+   * Hỗ trợ tự động vượt Cloudflare / chặn IP bằng Smart Proxy fallback khi tải Sitemap XML.
    */
   private async ztteam_extractArticleLinksFromSitemap(sourceUrl: string): Promise<string[]> {
     try {
@@ -244,45 +244,62 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         `${origin}/sitemap_index.xml`,
       ];
 
-      for (const smUrl of sitemapCandidates) {
+      const fetchWithFallback = async (targetUrl: string): Promise<string | null> => {
         try {
-          const res = await fetch(smUrl, {
+          const res = await fetch(targetUrl, {
             signal: AbortSignal.timeout(8000),
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
               'Accept': 'application/xml, text/xml, */*'
             }
           });
-          if (!res.ok) continue;
-          const text = await res.text();
-          if (!text.includes('<loc>')) continue;
+          if (res.ok) {
+            return await res.text();
+          }
+        } catch (e) {}
 
-          // Kiểm tra nếu là sitemap index chứa các sitemap con
-          const subSitemaps = [...text.matchAll(/<loc>(https?:\/\/[^<]+(?:post|story|article)[^<]*\.xml)<\/loc>/gi)].map(m => m[1]);
+        // Fallback qua Smart Proxy (Jina) nếu bị Cloudflare 403 / timeout / chặn IP
+        try {
+          const proxyRes = await fetch(`https://r.jina.ai/${targetUrl}`, {
+            signal: AbortSignal.timeout(20000),
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0' }
+          });
+          if (proxyRes.ok) {
+            return await proxyRes.text();
+          }
+        } catch (e) {}
+        return null;
+      };
+
+      for (const smUrl of sitemapCandidates) {
+        try {
+          const text = await fetchWithFallback(smUrl);
+          if (!text) continue;
+
+          // Trích xuất tất cả URLs có trong text (hỗ trợ cả XML <loc>... và Markdown [url](url))
+          const allUrls = [...text.matchAll(/https?:\/\/[^\s\)\<\>\"']+/g)].map(m => m[0]);
+          if (allUrls.length === 0) continue;
+
+          // Kiểm tra xem có sitemap con cho bài viết không (VD: sitemap-posts.xml, post-sitemap.xml, wp-sitemap-posts-post-*.xml)
+          const subSitemaps = allUrls.filter(u => u.endsWith('.xml') && /(?:post|story|article)/i.test(u) && u !== smUrl);
           if (subSitemaps.length > 0) {
-            for (const subSm of subSitemaps.slice(0, 3)) {
+            for (const subSm of subSitemaps.slice(0, 5)) {
               try {
-                const subRes = await fetch(subSm, {
-                  signal: AbortSignal.timeout(8000),
-                  headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0' }
-                });
-                if (subRes.ok) {
-                  const subText = await subRes.text();
-                  const urls = [...subText.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/gi)].map(m => m[1]);
-                  const articleUrls = urls.filter(u => this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
-                  if (articleUrls.length > 0) {
-                    return articleUrls;
-                  }
+                const subText = await fetchWithFallback(subSm);
+                if (!subText) continue;
+                const subUrls = [...subText.matchAll(/https?:\/\/[^\s\)\<\>\"']+/g)].map(m => m[0]);
+                const articleUrls = subUrls.filter(u => !u.endsWith('.xml') && this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
+                if (articleUrls.length > 0) {
+                  return [...new Set(articleUrls)];
                 }
               } catch (e) {}
             }
           }
 
-          // Trực tiếp URL trong sitemap
-          const urls = [...text.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/gi)].map(m => m[1]);
-          const articleUrls = urls.filter(u => this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
+          // Trích xuất trực tiếp bài viết từ sitemap hiện tại
+          const articleUrls = allUrls.filter(u => !u.endsWith('.xml') && this.fetcherService.ztteam_isArticleUrl(u, baseUrl.hostname));
           if (articleUrls.length > 0) {
-            return articleUrls;
+            return [...new Set(articleUrls)];
           }
         } catch (e) {}
       }
@@ -311,16 +328,42 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
       const sitemapArticles = await this.ztteam_extractArticleLinksFromSitemap(source.source_url);
       if (sitemapArticles && sitemapArticles.length > 0) {
         this.logger.log(`[Sitemap] Tìm thấy ${sitemapArticles.length} link bài viết từ sitemap của ${source.source_url}`);
-        for (const url of sitemapArticles) {
-          const history = await this.prisma.ztteam_crawl_history.findUnique({
-            where: { source_id_url: { source_id: source.id, url } }
-          });
-          const isAlreadyProcessed = history && (
-            history.status === 'SUCCESS' ||
-            history.status.startsWith('SKIPPED') ||
-            history.status === 'FAILED'
-          );
-          if (!isAlreadyProcessed) {
+        
+        // Đảo ngược để ưu tiên bài mới nhất nếu sitemap xếp theo thứ tự cũ -> mới (ví dụ ID tăng dần)
+        const candidates = sitemapArticles.slice();
+        const firstNum = (candidates[0].match(/\/(\d+)\/?$/) || [])[1];
+        const lastNum = (candidates[candidates.length - 1].match(/\/(\d+)\/?$/) || [])[1];
+        if (firstNum && lastNum && parseInt(firstNum, 10) < parseInt(lastNum, 10)) {
+          candidates.reverse();
+        }
+
+        // Tối ưu DB: Lấy trạng thái batch 300 candidates đầu tiên
+        const batchCheck = candidates.slice(0, 300);
+        const existingRecords = await this.prisma.ztteam_crawl_history.findMany({
+          where: {
+            source_id: source.id,
+            url: { in: batchCheck }
+          },
+          select: { url: true, status: true }
+        });
+        const processedSet = new Set(
+          existingRecords
+            .filter(r => r.status === 'SUCCESS' || r.status.startsWith('SKIPPED') || r.status === 'FAILED')
+            .map(r => r.url)
+        );
+
+        for (const url of candidates) {
+          let isProcessed = false;
+          if (batchCheck.includes(url)) {
+            isProcessed = processedSet.has(url);
+          } else {
+            const h = await this.prisma.ztteam_crawl_history.findUnique({
+              where: { source_id_url: { source_id: source.id, url } }
+            });
+            isProcessed = !!(h && (h.status === 'SUCCESS' || h.status.startsWith('SKIPPED') || h.status === 'FAILED'));
+          }
+
+          if (!isProcessed) {
             urlsToFetch.push(url);
             if (urlsToFetch.length >= maxArticlesPerCycle * 5) {
               break;
