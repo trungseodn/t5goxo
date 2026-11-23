@@ -1,3 +1,4 @@
+import React, { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import Overview from './components/Overview'
@@ -35,6 +36,10 @@ function ZTTeamProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  useEffect(() => {
+    document.title = '[T5] CreatorPro AI - Tự Động Hóa Facebook';
+  }, []);
+
   return (
     <ErrorBoundary fallbackTitle="Ứng dụng gặp sự cố">
       <BrowserRouter>

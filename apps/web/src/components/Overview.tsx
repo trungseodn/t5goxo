@@ -542,7 +542,7 @@ export default function Overview() {
 
       {/** Footer Info */}
       <footer className="pt-2 flex flex-col sm:flex-row items-center justify-between text-xs text-fb-text-muted gap-2 font-medium">
-        <p>© 2026 CreatorPro AI. Phát triển bởi <a href="https://ztteam.site" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline font-bold">ZTTeam</a>.</p>
+        <p>© 2026 T5 CreatorPro AI (t5.goxo.us). Phát triển bởi <a href="https://ztteam.site" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline font-bold">ZTTeam</a>.</p>
         <div className="flex items-center gap-4">
           <span className="hover:text-fb-text transition-colors cursor-pointer">Điều khoản</span>
           <span className="hover:text-fb-text transition-colors cursor-pointer">Bảo mật</span>

@@ -37,11 +37,14 @@ export default function ZTTeamLogin() {
           <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 via-fb-blue to-cyan-400 mx-auto rounded-2xl flex items-center justify-center text-white mb-4 shadow-lg shadow-blue-500/30 font-black text-2xl tracking-tighter">
             f
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black text-fb-text tracking-tight mb-1.5">
-            CreatorPro AI
-          </h1>
+          <div className="flex items-center justify-center gap-2 mb-1.5">
+            <h1 className="text-2xl sm:text-3xl font-black text-fb-text tracking-tight">
+              CreatorPro AI
+            </h1>
+            <span className="px-2 py-0.5 text-xs font-black tracking-wider uppercase bg-blue-500/10 text-fb-blue border border-blue-500/20 rounded-md">T5</span>
+          </div>
           <p className="text-xs sm:text-sm font-medium text-fb-text-muted">
-            Hệ thống tự động hóa nội dung &amp; Video Reels
+            Hệ thống tự động hóa nội dung &amp; Video Reels (t5.goxo.us)
           </p>
         </div>
 

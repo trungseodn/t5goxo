@@ -80,8 +80,11 @@ export default function Layout() {
                             f
                         </div>
                         <div>
-                            <h1 className="text-base font-black text-fb-text tracking-wide leading-tight">CreatorPro AI</h1>
-                            <p className="text-xs font-medium text-fb-text-muted">Tự Động Hóa Facebook</p>
+                            <div className="flex items-center gap-1.5">
+                                <h1 className="text-base font-black text-fb-text tracking-wide leading-tight">CreatorPro AI</h1>
+                                <span className="px-1.5 py-0.5 text-[10px] font-black tracking-wider uppercase bg-blue-500/10 text-fb-blue border border-blue-500/20 rounded">T5</span>
+                            </div>
+                            <p className="text-xs font-medium text-fb-text-muted">t5.goxo.us</p>
                         </div>
                     </div>
                     {/* Close button on mobile */}
@@ -197,9 +200,10 @@ export default function Layout() {
                     <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden text-fb-text p-2 rounded-full hover:bg-fb-surface-hover transition-colors">
                         <span className="material-symbols-outlined text-2xl">menu</span>
                     </button>
+                    <span className="px-2 py-0.5 text-xs font-black tracking-wider uppercase bg-blue-500/10 text-fb-blue border border-blue-500/20 rounded-md">T5</span>
                     <div className="relative hidden sm:block w-64 md:w-80">
                         <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-fb-text-muted text-xl">search</span>
-                        <input type="text" placeholder="Tìm kiếm trên CreatorPro..." className="w-full pl-10 pr-4 py-2 bg-fb-surface-hover text-fb-text placeholder:text-fb-text-muted rounded-full text-sm font-medium border-none focus:outline-none focus:ring-2 focus:ring-fb-blue transition-all" />
+                        <input type="text" placeholder="Tìm kiếm trên T5 - CreatorPro..." className="w-full pl-10 pr-4 py-2 bg-fb-surface-hover text-fb-text placeholder:text-fb-text-muted rounded-full text-sm font-medium border-none focus:outline-none focus:ring-2 focus:ring-fb-blue transition-all" />
                     </div>
                 </div>
 
