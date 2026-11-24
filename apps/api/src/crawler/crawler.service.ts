@@ -273,8 +273,8 @@ export class ZTTeamCrawlerService {
       const eligiblePages = candidatePages.filter(p => !usedPageIds.has(p.id));
 
       if (eligiblePages.length > 0) {
-        /** Strict Round-Robin: Pick the page that received a post least recently (oldest or null created_at) */
-        let chosenPage = eligiblePages[0];
+        /** Strict Round-Robin: Pick top 3 eligible pages that received a post least recently */
+        let chosenPages = [eligiblePages[0]];
         if (eligiblePages.length > 1) {
           const pageLastAssigned = await Promise.all(
             eligiblePages.map(async (p) => {
@@ -291,10 +291,10 @@ export class ZTTeamCrawlerService {
           );
           /** Sắp xếp tăng dần theo lastTime: Page nào có lastTime nhỏ nhất (lâu nhất chưa nhận bài) sẽ đứng đầu */
           pageLastAssigned.sort((a, b) => a.lastTime - b.lastTime);
-          chosenPage = pageLastAssigned[0].page;
+          chosenPages = pageLastAssigned.slice(0, 3).map(x => x.page);
         }
-        targetPages.push(chosenPage);
-        this.logger.log(`[Round-Robin] Assigned story #${wpResult.id} exclusively to Page: ${chosenPage.name} (${chosenPage.id})`);
+        targetPages.push(...chosenPages);
+        this.logger.log(`[Round-Robin] Assigned story #${wpResult.id} to ${chosenPages.length} Pages: ${chosenPages.map(p => p.name).join(', ')}`);
       } else if (candidatePages.length === 0) {
         /**
          * ZTTeam: Nguồn cào này không có Fanpage nào liên kết active.

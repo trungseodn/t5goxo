@@ -213,10 +213,14 @@ export class ZTTeamPublisherCron {
               const [h, m] = time.split(':').map(Number);
               const fixedTimeMinutes = h * 60 + m;
 
-              /** ZTTeam: Mở rộng khung giờ từ 5 phút lên 45 phút để các Page xếp hàng tuần tự không bị lỡ lượt */
-              if (currentMinutes >= fixedTimeMinutes && currentMinutes < fixedTimeMinutes + 45) {
-                /** Nếu đã đăng cách đây chưa đầy 45 phút -> Khung giờ này đã được xử lý */
-                if (diffMinutesFromLastPost < 45) {
+              /**
+               * ZTTeam: Mở rộng khung giờ lên 180 phút (3 tiếng) kết hợp kiểm tra diffMinutes >= 90
+               * Đảm bảo với 130+ Fanpage xếp hàng tuần tự, mọi Page đều được đăng đúng slot
+               * mà không bị quá hạn (expire) hoặc đăng lặp trong cùng 1 buổi.
+               */
+              if (currentMinutes >= fixedTimeMinutes && currentMinutes < fixedTimeMinutes + 180) {
+                /** Nếu đã đăng trong vòng 90 phút qua -> Khung giờ này đã được xử lý */
+                if (diffMinutesFromLastPost < 90) {
                   this.logger.log(`Page ${page.name}: Slot ${time} already served (${diffMinutesFromLastPost}m ago). Skipping.`);
                   break;
                 }
@@ -325,10 +329,10 @@ export class ZTTeamPublisherCron {
 
       /**
        * ZTTeam: Kiểm tra và đảm bảo khoảng cách an toàn toàn cục (Global Rate Limiter):
-       * Tuyệt đối không gọi Facebook API nếu lần đăng gần nhất trên toàn hệ thống chưa đủ 45 giây.
+       * Tối ưu xuống 20 giây để tăng tốc độ xuất bản cho mạng lưới 130+ Fanpage.
        */
       const elapsedSinceLastGlobal = Date.now() - this.ztteam_lastGlobalPublishTimestamp;
-      const MIN_GLOBAL_GAP_MS = 45000;
+      const MIN_GLOBAL_GAP_MS = 20000;
       if (this.ztteam_lastGlobalPublishTimestamp > 0 && elapsedSinceLastGlobal < MIN_GLOBAL_GAP_MS) {
         const waitMs = MIN_GLOBAL_GAP_MS - elapsedSinceLastGlobal;
         this.logger.log(`[ZTTeam Global Dispatcher] Giãn cách bảo vệ Meta: Chờ thêm ${Math.round(waitMs / 1000)}s trước khi gọi Facebook API...`);
