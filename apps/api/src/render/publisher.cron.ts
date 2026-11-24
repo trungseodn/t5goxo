@@ -47,8 +47,13 @@ export function ztteam_getRandomHookComment(seed?: string): string {
 export class ZTTeamPublisherCron {
   private readonly logger = new Logger(ZTTeamPublisherCron.name);
   private isRunning = false;
+  private isBackgroundRunning = false;
   /** ZTTeam: Lưu vết thời điểm xuất bản gần nhất trên toàn hệ thống (mọi Page) để chống Burst API */
   private ztteam_lastGlobalPublishTimestamp = 0;
+  /** ZTTeam: Lưu vết thời điểm xuất bản gần nhất theo từng Facebook Account để giãn cách an toàn chống spam */
+  private static ztteam_lastPublishByAccount = new Map<string, number>();
+  /** ZTTeam: Cooldown cho tài khoản bị Meta hạn chế (Code 368 / Checkpoint) */
+  private static ztteam_accountCooldownMap = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -70,14 +75,6 @@ export class ZTTeamPublisherCron {
     this.isRunning = true;
 
     try {
-      /** 0. Xử lý quy trình comment tự động sau 1 giờ và reply Part 2 sau 15 phút cho các bài đã đăng */
-      await this.ztteam_handleDelayedComments();
-
-      /** 0.1 Xử lý tự động gắn link theo ngưỡng view video (chạy mỗi 2 phút) */
-      if (new Date().getMinutes() % 2 === 0) {
-        await this.ztteam_handleViewThresholdLinkInjection();
-      }
-
       /** 1. Tìm các Reel đã render xong đang chờ đăng (xếp theo thời gian tạo cũ nhất trước) */
       const pendingReels = await this.prisma.ztteam_reels.findMany({
         where: {
@@ -129,9 +126,55 @@ export class ZTTeamPublisherCron {
       for (const [pageId, page] of pagesMap.entries()) {
         const { auto_publish_enabled, schedule_mode, schedule_fixed_times, schedule_immediate_gap_minutes, post_format } = page;
 
-        /** Nếu Page đang tắt tự động đăng bài hoặc bị vô hiệu hóa thì bỏ qua */
+        /** Nếu Page đang tắt tự động đăng bài, bị vô hiệu hóa, hoặc tài khoản đang bị hạn chế thì bỏ qua */
         if (auto_publish_enabled === false || page.is_active === false) {
           continue;
+        }
+
+        if (page.token_status === 'checkpoint_required' || page.token_status === 'restricted') {
+          continue;
+        }
+
+        const accountId = page.fb_account_id;
+        if (page.fb_account?.status === 'restricted') {
+          continue;
+        }
+
+        const accountCooldown = ZTTeamPublisherCron.ztteam_accountCooldownMap.get(accountId);
+        if (accountCooldown && Date.now() < accountCooldown) {
+          continue;
+        }
+
+        /** Kiểm tra nhanh khung giờ trước khi query DB để giảm tải CPU và độ trễ */
+        if (schedule_mode === 'fixed') {
+          if (schedule_fixed_times && Array.isArray(schedule_fixed_times) && schedule_fixed_times.length > 0) {
+            const vnFormatter = new Intl.DateTimeFormat('en-US', {
+              timeZone: 'Asia/Ho_Chi_Minh',
+              hour: 'numeric',
+              minute: 'numeric',
+              hour12: false,
+              hourCycle: 'h23',
+            });
+            const parts = vnFormatter.formatToParts(now);
+            const vnH = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+            const vnM = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+            const currentMinutes = vnH * 60 + vnM;
+
+            let inAnyWindow = false;
+            for (const time of schedule_fixed_times as string[]) {
+              const [h, m] = time.split(':').map(Number);
+              const fixedTimeMinutes = h * 60 + m;
+              if (currentMinutes >= fixedTimeMinutes && currentMinutes < fixedTimeMinutes + 180) {
+                inAnyWindow = true;
+                break;
+              }
+            }
+            if (!inAnyWindow) {
+              continue;
+            }
+          } else {
+            continue;
+          }
         }
 
         /** Lấy bài đăng thành công gần nhất của Page này để tính khoảng cách thời gian và lượt trước là reel hay image */
@@ -165,28 +208,32 @@ export class ZTTeamPublisherCron {
           }
         }
 
-        /** Kiểm tra xem có lần thử đăng thất bại nào gần đây (trong vòng 5 phút) để tránh spam API */
+        /** Kiểm tra xem có lần thử đăng thất bại nào gần đây (trong vòng 15 phút) để tránh spam API */
+        const fifteenMinutesAgo = new Date(now.getTime() - 15 * 60 * 1000);
         const recentFailedReel = await this.prisma.ztteam_reels.findFirst({
           where: {
             page_id: pageId,
-            status: 'FAILED',
-            is_posted: false,
-            updated_at: { gte: new Date(now.getTime() - 5 * 60 * 1000) }
+            updated_at: { gte: fifteenMinutesAgo },
+            OR: [
+              { status: 'FAILED' },
+              { post_retry_count: { gt: 0 } }
+            ]
           },
           orderBy: { updated_at: 'desc' }
         });
         const recentFailedImage = await this.prisma.ztteam_images.findFirst({
           where: {
             page_id: pageId,
-            status: 'FAILED',
-            is_posted: false,
-            updated_at: { gte: new Date(now.getTime() - 5 * 60 * 1000) }
+            updated_at: { gte: fifteenMinutesAgo },
+            OR: [
+              { status: 'FAILED' },
+              { post_retry_count: { gt: 0 } }
+            ]
           },
           orderBy: { updated_at: 'desc' }
         });
 
         if (recentFailedReel || recentFailedImage) {
-          this.logger.warn(`Page ${page.name}: Có lượt thử đăng thất bại trong vòng 5 phút qua. Tạm hoãn để bảo vệ an toàn cho Page.`);
           continue;
         }
 
@@ -315,10 +362,24 @@ export class ZTTeamPublisherCron {
 
       /**
        * ZTTeam: Thuật toán điều phối hàng đợi (Priority Dispatcher):
-       * 1. Ưu tiên Page nào lâu nhất chưa có bài đăng (diffMinutesFromLastPost giảm dần)
-       * 2. Nếu bằng nhau, ưu tiên bài viết được tạo sớm nhất (itemCreatedAt tăng dần)
+       * 1. Phân phối luân phiên (Interleaving) chống gom cụm cùng 1 tài khoản FB (Anti-spam):
+       *    Tài khoản nào vừa mới đăng bài trong vòng 2 phút qua sẽ nhường lượt cho tài khoản khác.
+       * 2. Ưu tiên Page nào lâu nhất chưa có bài đăng (diffMinutesFromLastPost giảm dần).
+       * 3. Nếu bằng nhau, ưu tiên bài viết được tạo sớm nhất (itemCreatedAt tăng dần).
        */
+      const MIN_ACCOUNT_GAP_MS = 120000; // 2 phút giãn cách giữa các bài cùng 1 FB Account
       eligibleCandidates.sort((a, b) => {
+        const aAccId = a.page?.fb_account_id || '';
+        const bAccId = b.page?.fb_account_id || '';
+        const aLastTime = ZTTeamPublisherCron.ztteam_lastPublishByAccount.get(aAccId) || 0;
+        const bLastTime = ZTTeamPublisherCron.ztteam_lastPublishByAccount.get(bAccId) || 0;
+        const aInCooldown = aAccId ? (Date.now() - aLastTime < MIN_ACCOUNT_GAP_MS) : false;
+        const bInCooldown = bAccId ? (Date.now() - bLastTime < MIN_ACCOUNT_GAP_MS) : false;
+
+        if (aInCooldown !== bInCooldown) {
+          return aInCooldown ? 1 : -1;
+        }
+
         if (b.diffMinutesFromLastPost !== a.diffMinutesFromLastPost) {
           return b.diffMinutesFromLastPost - a.diffMinutesFromLastPost;
         }
@@ -343,7 +404,7 @@ export class ZTTeamPublisherCron {
       const target = eligibleCandidates[0];
       const { selectedItem, page } = target;
 
-      this.logger.log(`[ZTTeam Global Dispatcher] Đang xuất bản cho Page: ${page.name} (Đã chờ: ${target.diffMinutesFromLastPost === Infinity ? 'Mới/Vô cực' : target.diffMinutesFromLastPost + 'm'})`);
+      this.logger.log(`[ZTTeam Global Dispatcher] Đang xuất bản cho Page: ${page.name} (Tài khoản: ${page.fb_account?.name || 'N/A'}, Đã chờ: ${target.diffMinutesFromLastPost === Infinity ? 'Mới/Vô cực' : target.diffMinutesFromLastPost + 'm'})`);
 
       if (selectedItem.type === 'reel_legacy') {
         await this.ztteam_publishReel(selectedItem.data, page);
@@ -354,10 +415,38 @@ export class ZTTeamPublisherCron {
       }
 
       this.ztteam_lastGlobalPublishTimestamp = Date.now();
+      if (page?.fb_account_id) {
+        ZTTeamPublisherCron.ztteam_lastPublishByAccount.set(page.fb_account_id, Date.now());
+      }
     } catch (error: any) {
       this.logger.error(`Unified publisher cron error: ${error.message}`);
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  @Cron('*/5 * * * *')
+  async ztteam_handleBackgroundTasksCron() {
+    if (process.env.ENABLE_AUTO_CRON === 'false') {
+      return;
+    }
+
+    if (this.isBackgroundRunning) {
+      this.logger.warn('Background publisher tasks are already running, skipping this tick');
+      return;
+    }
+    this.isBackgroundRunning = true;
+
+    try {
+      /** Bước 1: Quét và xử lý delayed comments (bình luận mồi & reply) */
+      await this.ztteam_handleDelayedComments();
+
+      /** Bước 2: Quét và xử lý tự động gắn link theo ngưỡng view video */
+      await this.ztteam_handleViewThresholdLinkInjection();
+    } catch (error: any) {
+      this.logger.error(`Error in ztteam_handleBackgroundTasksCron: ${error.message}`);
+    } finally {
+      this.isBackgroundRunning = false;
     }
   }
 
@@ -461,13 +550,18 @@ export class ZTTeamPublisherCron {
         extractedError.includes('xác nhận danh tính') ||
         extractedError.includes('confirm your identity');
 
+      const isAccountRestricted =
+        extractedError.includes('1404112') ||
+        extractedError.includes('368') ||
+        extractedError.includes('limited access to the site');
+
       let currentRetries = (reel.post_retry_count || 0) + 1;
       this.logger.error(`Failed to auto-publish reel ${reel.id} (Attempt ${currentRetries}/3): ${extractedError}`);
 
-      if (isIdentityCheckpoint) {
+      if (isIdentityCheckpoint || isAccountRestricted) {
         /**
          * ZTTeam: Kích hoạt Circuit Breaker ngay lập tức!
-         * Meta yêu cầu xác nhận danh tính trên điện thoại.
+         * Meta yêu cầu xác nhận danh tính hoặc bị giới hạn tính năng (Code 368 / 1404112).
          * Dừng thử lại ngay (set 3) và tạm dừng auto_publish trên Page để bảo vệ BM và các Page khác.
          */
         currentRetries = 3;
@@ -475,10 +569,26 @@ export class ZTTeamPublisherCron {
           where: { id: page.id },
           data: {
             auto_publish_enabled: false,
-            token_status: 'checkpoint_required'
+            token_status: isAccountRestricted ? 'restricted' : 'checkpoint_required'
           }
         }).catch(() => {});
-        this.logger.warn(`[CIRCUIT BREAKER] Page ${page.name} kích hoạt bảo vệ do Facebook yêu cầu xác nhận danh tính. Tạm ngưng auto-publish.`);
+
+        if (isAccountRestricted && page.fb_account_id) {
+          await this.prisma.ztteam_fb_accounts.update({
+            where: { id: page.fb_account_id },
+            data: { status: 'restricted' }
+          }).catch(() => {});
+          ZTTeamPublisherCron.ztteam_accountCooldownMap.set(page.fb_account_id, Date.now() + 24 * 3600 * 1000);
+        }
+
+        const warnMsg = isAccountRestricted
+          ? `[CIRCUIT BREAKER] Tài khoản Facebook ${page.fb_account?.name || page.fb_account_id} / Page ${page.name} bị Meta tạm khóa tính năng (Code 368: Subcode 1404112). Kích hoạt Circuit Breaker tạm ngưng auto-publish để bảo vệ BM.`
+          : `[CIRCUIT BREAKER] Page ${page.name} kích hoạt bảo vệ do Facebook yêu cầu xác nhận danh tính (Subcode 4854002). Tạm ngưng auto-publish.`;
+
+        this.logger.warn(warnMsg);
+        try {
+          await this.telegramService.ztteam_sendMessage(`🚨 ${warnMsg}\nChi tiết: ${extractedError}`);
+        } catch (_) {}
       }
 
       if (currentRetries < 3) {
@@ -496,7 +606,9 @@ export class ZTTeamPublisherCron {
           data: {
             status: 'FAILED',
             post_retry_count: currentRetries,
-            error_log: isIdentityCheckpoint
+            error_log: isAccountRestricted
+              ? `[CIRCUIT BREAKER] Facebook tạm khóa tài khoản (Code 368 / Subcode 1404112): ${extractedError}`
+              : isIdentityCheckpoint
               ? `[CIRCUIT BREAKER] Facebook yêu cầu Quản trị viên mở điện thoại xác minh danh tính (Subcode 4854002): ${extractedError}`
               : `Lỗi đăng bài sau 3 lần thử: ${extractedError}`,
           }
@@ -664,13 +776,18 @@ export class ZTTeamPublisherCron {
         extractedError.includes('xác nhận danh tính') ||
         extractedError.includes('confirm your identity');
 
+      const isAccountRestricted =
+        extractedError.includes('1404112') ||
+        extractedError.includes('368') ||
+        extractedError.includes('limited access to the site');
+
       let currentRetries = (image.post_retry_count || 0) + 1;
       this.logger.error(`Failed to auto-publish image ${image.id} (Attempt ${currentRetries}/3): ${extractedError}`);
 
-      if (isIdentityCheckpoint) {
+      if (isIdentityCheckpoint || isAccountRestricted) {
         /**
          * ZTTeam: Kích hoạt Circuit Breaker ngay lập tức!
-         * Meta yêu cầu xác nhận danh tính trên điện thoại.
+         * Meta yêu cầu xác nhận danh tính hoặc bị giới hạn tính năng (Code 368 / 1404112).
          * Dừng thử lại ngay (set 3) và tạm dừng auto_publish trên Page để bảo vệ BM và các Page khác.
          */
         currentRetries = 3;
@@ -678,10 +795,26 @@ export class ZTTeamPublisherCron {
           where: { id: page.id },
           data: {
             auto_publish_enabled: false,
-            token_status: 'checkpoint_required'
+            token_status: isAccountRestricted ? 'restricted' : 'checkpoint_required'
           }
         }).catch(() => {});
-        this.logger.warn(`[CIRCUIT BREAKER] Page ${page.name} kích hoạt bảo vệ do Facebook yêu cầu xác nhận danh tính. Tạm ngưng auto-publish.`);
+
+        if (isAccountRestricted && page.fb_account_id) {
+          await this.prisma.ztteam_fb_accounts.update({
+            where: { id: page.fb_account_id },
+            data: { status: 'restricted' }
+          }).catch(() => {});
+          ZTTeamPublisherCron.ztteam_accountCooldownMap.set(page.fb_account_id, Date.now() + 24 * 3600 * 1000);
+        }
+
+        const warnMsg = isAccountRestricted
+          ? `[CIRCUIT BREAKER] Tài khoản Facebook ${page.fb_account?.name || page.fb_account_id} / Page ${page.name} bị Meta tạm khóa tính năng (Code 368: Subcode 1404112). Kích hoạt Circuit Breaker tạm ngưng auto-publish để bảo vệ BM.`
+          : `[CIRCUIT BREAKER] Page ${page.name} kích hoạt bảo vệ do Facebook yêu cầu xác nhận danh tính (Subcode 4854002). Tạm ngưng auto-publish.`;
+
+        this.logger.warn(warnMsg);
+        try {
+          await this.telegramService.ztteam_sendMessage(`🚨 ${warnMsg}\nChi tiết: ${extractedError}`);
+        } catch (_) {}
       }
 
       if (currentRetries < 3) {
@@ -699,7 +832,9 @@ export class ZTTeamPublisherCron {
           data: {
             status: 'FAILED',
             post_retry_count: currentRetries,
-            error_log: isIdentityCheckpoint
+            error_log: isAccountRestricted
+              ? `[CIRCUIT BREAKER] Facebook tạm khóa tài khoản (Code 368 / Subcode 1404112): ${extractedError}`
+              : isIdentityCheckpoint
               ? `[CIRCUIT BREAKER] Facebook yêu cầu Quản trị viên mở điện thoại xác minh danh tính (Subcode 4854002): ${extractedError}`
               : `Lỗi đăng ảnh sau 3 lần thử: ${extractedError}`
           }
