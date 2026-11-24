@@ -276,14 +276,76 @@ export class ZTTeamFetcherService {
   }
 
   /**
+   * ZTTeam: Tự động phát hiện và khôi phục tiêu đề bài viết thực tế khi website nguồn để tiêu đề
+   * là số chương (như "7", "6"), quá ngắn hoặc là từ khóa hệ thống (như trên usstorydramahn.cfx.bz).
+   */
+  ztteam_resolveStoryTitle(rawTitle: string, content: string, url: string): string {
+    let title = (rawTitle || '').trim();
+
+    // Loại bỏ hậu tố domain nếu có (ví dụ " - SiteName")
+    title = title.replace(/\s*[-–|]\s*[a-zA-Z0-9.-]+\.(?:com|org|net|biz|bz|info|vn|online)$/i, '').trim();
+
+    const isNumericOrShort = !title || title.length < 10 || /^\d+$/.test(title) || /^chapter\s*\d+$/i.test(title);
+    const isGeneric = /^(news|home|stories|uncategorized|blog|category)$/i.test(title) || title.includes('cfx.bz') || title.includes('cafex.biz');
+
+    if (isNumericOrShort || isGeneric) {
+      // 1. Tìm tiêu đề thực sự từ các dòng đầu tiên của nội dung (thường là Heading / Chapter title)
+      if (content) {
+        const lines = content
+          .split('\n')
+          .map(l => l.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim())
+          .filter(l => l.length > 0);
+
+        for (const line of lines.slice(0, 5)) {
+          const lineWords = line.split(/\s+/).filter(Boolean);
+          // Tiêu đề hợp lệ: từ 10 đến 160 ký tự, ít nhất 3 từ
+          if (line.length >= 10 && line.length <= 160 && lineWords.length >= 3) {
+            // Không lấy nếu là disclaimer hoặc thời gian đọc
+            if (!/min read|published|author|copyright|disclaimer/i.test(line)) {
+              title = line;
+              break;
+            }
+          }
+        }
+      }
+
+      // 2. Nếu vẫn không có, trích xuất từ URL slug
+      if (!title || title.length < 10 || /^\d+$/.test(title)) {
+        try {
+          const parsedUrl = new URL(url);
+          const segments = parsedUrl.pathname.split('/').filter(Boolean);
+          const lastSegment = segments[segments.length - 1] || '';
+          const slug = lastSegment.replace(/\.html?$/i, '').replace(/-\d+$/, '').replace(/^\d+-/, '');
+          if (slug.length >= 8 && slug.includes('-')) {
+            const derived = slug
+              .split('-')
+              .filter(w => !/^\d+$/.test(w))
+              .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+              .join(' ');
+            if (derived.length >= 10 && derived.split(/\s+/).length >= 3) {
+              title = derived;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return title || rawTitle || 'Untitled Story';
+  }
+
+  /**
    * ZTTeam: Kiểm duyệt chất lượng nội dung bài viết câu chuyện trước khi xuất bản.
    * Đảm bảo không phải trang chuyên mục (như "News"), trang 404/Cloudflare, hoặc nội dung quá ngắn.
    */
-  ztteam_validateStoryArticle(title: string, content: string): { isValid: boolean; reason?: string } {
-    const trimmedTitle = (title || '').trim();
+  ztteam_validateStoryArticle(title: string, content: string, url?: string): { isValid: boolean; reason?: string } {
+    let trimmedTitle = (title || '').trim();
     const trimmedContent = (content || '').trim();
 
-    /** 1. Kiểm tra tiêu đề */
+    /** 1. Kiểm tra tiêu đề - tự động tìm tiêu đề thay thế nếu tiêu đề quá ngắn hoặc chỉ là số */
+    if (!trimmedTitle || trimmedTitle.length < 10 || /^\d+$/.test(trimmedTitle)) {
+      trimmedTitle = this.ztteam_resolveStoryTitle(trimmedTitle, trimmedContent, url || '');
+    }
+
     if (!trimmedTitle || trimmedTitle.length < 10) {
       return { isValid: false, reason: `Tiêu đề quá ngắn (${trimmedTitle.length} ký tự)` };
     }
@@ -565,10 +627,10 @@ export class ZTTeamFetcherService {
 
     /** Clean markdown headers, audio player artifacts (00:00), ad text, and image markdown from text */
     const cleanContent = this.ztteam_cleanStoryContent(text);
-    const finalTitle = title || this.ztteam_extractDomain(url);
+    const finalTitle = this.ztteam_resolveStoryTitle(title, cleanContent, url);
 
     /** ZTTeam Gatekeeper: Kiểm duyệt nội dung từ proxy trước khi trả về */
-    const validation = this.ztteam_validateStoryArticle(finalTitle, cleanContent);
+    const validation = this.ztteam_validateStoryArticle(finalTitle, cleanContent, url);
     if (!validation.isValid) {
       throw new HttpException(`Không phải bài viết hợp lệ (${validation.reason})`, HttpStatus.BAD_REQUEST);
     }
@@ -861,8 +923,9 @@ export class ZTTeamFetcherService {
         images = images.filter(img => getBaseImg(img) !== baseOg);
       }
 
-      /** ZTTeam Gatekeeper: Kiểm duyệt chất lượng tiêu đề và nội dung */
-      const validation = this.ztteam_validateStoryArticle(title, content);
+      /** ZTTeam Gatekeeper: Chuẩn hóa tiêu đề và kiểm duyệt chất lượng nội dung */
+      title = this.ztteam_resolveStoryTitle(title, content, url);
+      const validation = this.ztteam_validateStoryArticle(title, content, url);
       if (!validation.isValid) {
         throw new HttpException(`Không phải bài viết hợp lệ (${validation.reason})`, HttpStatus.BAD_REQUEST);
       }

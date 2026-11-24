@@ -311,8 +311,17 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
     const urlsToFetch: string[] = [];
     const targetWpUrl = source.target_site?.wp_url || '';
     const sourceUrl = source.source_url || '';
-    const isNewsSite = /imsb\.info|mv\.imsb\.info/i.test(targetWpUrl) || /imsb\.info|mv\.imsb\.info/i.test(sourceUrl);
-    const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+
+    /** Chỉ giới hạn thời gian xuất bản nếu nguồn cào cấu hình rõ ràng maxArticleAgeDays > 0 */
+    let maxArticleAgeDays = 0;
+    try {
+      const rules = JSON.parse(source.extract_rules_json || '{}');
+      if (rules.maxArticleAgeDays && Number(rules.maxArticleAgeDays) > 0) {
+        maxArticleAgeDays = Number(rules.maxArticleAgeDays);
+      }
+    } catch (e) {}
+    const isAgeRestricted = maxArticleAgeDays > 0;
+    const MAX_AGE_MS = maxArticleAgeDays * 24 * 60 * 60 * 1000;
 
     /** Xác định batchSize: Mặc định 3 bài/lần chạy (thay vì 1 bài), tối đa 20 bài */
     let maxArticlesPerCycle = 3;
@@ -412,17 +421,17 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
         }
         previousPageKey = pageKey;
 
-        /** Kiểm tra riêng site News: nếu permalink có chứa ngày cũ hơn 5 ngày */
-        let allArticlesOnPageTooOld = isNewsSite;
+        /** Kiểm tra nếu nguồn cào cấu hình giới hạn ngày xuất bản */
+        let allArticlesOnPageTooOld = isAgeRestricted;
 
         /** Kiểm tra lịch sử xem bài nào trên trang này CHƯA được cào */
         const unCrawledOnThisPage: string[] = [];
         for (const url of pageArticles) {
-          if (isNewsSite) {
+          if (isAgeRestricted) {
             const urlDateMatch = url.match(/\b(202\d)[\/\-_](0[1-9]|1[0-2])[\/\-_](0[1-9]|[12]\d|3[01])\b/);
             if (urlDateMatch) {
               const articleDate = new Date(`${urlDateMatch[1]}-${urlDateMatch[2]}-${urlDateMatch[3]}`);
-              if (!isNaN(articleDate.getTime()) && (Date.now() - articleDate.getTime() > FIVE_DAYS_MS)) {
+              if (!isNaN(articleDate.getTime()) && (Date.now() - articleDate.getTime() > MAX_AGE_MS)) {
                 try {
                   await this.prisma.ztteam_crawl_history.upsert({
                     where: { source_id_url: { source_id: source.id, url } },
@@ -454,8 +463,8 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
           }
         }
 
-        if (isNewsSite && allArticlesOnPageTooOld && pageArticles.length > 0) {
-          this.logger.log(`[Trang ${p}] Tất cả bài viết trên trang của News site (${source.source_url}) đều đã cũ hơn 5 ngày. Dừng quét sâu các trang tiếp theo.`);
+        if (isAgeRestricted && allArticlesOnPageTooOld && pageArticles.length > 0) {
+          this.logger.log(`[Trang ${p}] Tất cả bài viết trên trang (${source.source_url}) đều đã cũ hơn ${maxArticleAgeDays} ngày. Dừng quét sâu các trang tiếp theo.`);
           break;
         }
 
@@ -609,13 +618,12 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
           /** Ignore upsert error */
         }
 
-        /** Circuit breaker: Nếu lỗi xác thực WordPress hoặc lỗi hệ thống nghiêm trọng, ngắt ngay vòng lặp */
-        const isAuthOrForbidden = err.message?.toLowerCase().includes('forbidden') || 
-                                 err.message?.toLowerCase().includes('401') || 
-                                 err.message?.toLowerCase().includes('unauthorized') ||
-                                 err.message?.toLowerCase().includes('status is forbidden');
-        if (isAuthOrForbidden) {
-          this.logger.error(`Circuit breaker triggered: WordPress auth error. Aborting remaining URLs to protect API quota.`);
+        /** Circuit breaker: Chỉ ngắt vòng lặp khi WordPress đích gặp lỗi xác thực nghiêm trọng (401/unauthorized từ WordPress) */
+        const errMsgLower = (err.message || '').toLowerCase();
+        const isWpAuthError = (errMsgLower.includes('wordpress') || errMsgLower.includes('rest_cannot_create') || errMsgLower.includes('application password') || errMsgLower.includes('wp-json')) &&
+                              (errMsgLower.includes('401') || errMsgLower.includes('unauthorized') || errMsgLower.includes('forbidden'));
+        if (isWpAuthError) {
+          this.logger.error(`Circuit breaker triggered: WordPress auth error (${err.message}). Aborting remaining URLs to protect API quota.`);
           break;
         }
       }

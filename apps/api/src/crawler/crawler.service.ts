@@ -1,6 +1,7 @@
 import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
+import sharp from 'sharp';
 import { PrismaService } from '../prisma/prisma.service';
 import { ZTTeamFetcherService } from './fetcher.service';
 import { ZTTeamWordpressService } from '../wordpress/wordpress.service';
@@ -66,21 +67,30 @@ export class ZTTeamCrawlerService {
     }
 
     const cleanContent = this.fetcherService.ztteam_cleanStoryContent(storyData.content);
-    const storyTitle = storyData.title.trim();
+    const storyTitle = this.fetcherService.ztteam_resolveStoryTitle(storyData.title, cleanContent, sourceUrl);
 
-    /** 1.0 Kiểm tra giới hạn 5 ngày đối với website Tin tức (imsb.info, mv.imsb.info) */
-    const targetSite = await this.prisma.ztteam_target_sites.findUnique({ where: { id: targetSiteId } });
-    const isNewsSite = /imsb\.info|mv\.imsb\.info/i.test(targetSite?.wp_url || '') || /imsb\.info|mv\.imsb\.info/i.test(sourceUrl);
-    if (isNewsSite && storyData.publishedTime) {
+    /** 1.0 Kiểm tra giới hạn ngày nếu nguồn cào cấu hình maxArticleAgeDays > 0 */
+    let maxArticleAgeDays = 0;
+    try {
+      const sourceRecord = await this.prisma.ztteam_crawl_sources.findFirst({
+        where: { source_url: { contains: new URL(sourceUrl).hostname } }
+      });
+      if (sourceRecord?.extract_rules_json) {
+        const rules = JSON.parse(sourceRecord.extract_rules_json);
+        if (rules.maxArticleAgeDays) maxArticleAgeDays = Number(rules.maxArticleAgeDays);
+      }
+    } catch {}
+
+    if (maxArticleAgeDays > 0 && storyData.publishedTime) {
       const pubDate = new Date(storyData.publishedTime);
-      const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
-      if (!isNaN(pubDate.getTime()) && (Date.now() - pubDate.getTime() > FIVE_DAYS_MS)) {
-        throw new HttpException(`[QUÁ HẠN 5 NGÀY] Bài viết tin tức xuất bản hơn 5 ngày (${pubDate.toISOString().split('T')[0]})`, HttpStatus.BAD_REQUEST);
+      const maxAgeMs = maxArticleAgeDays * 24 * 60 * 60 * 1000;
+      if (!isNaN(pubDate.getTime()) && (Date.now() - pubDate.getTime() > maxAgeMs)) {
+        throw new HttpException(`[QUÁ HẠN ${maxArticleAgeDays} NGÀY] Bài viết xuất bản hơn ${maxArticleAgeDays} ngày (${pubDate.toISOString().split('T')[0]})`, HttpStatus.BAD_REQUEST);
       }
     }
 
     /** ZTTeam Gatekeeper: Kiểm duyệt chất lượng tiêu đề và nội dung */
-    const validation = this.fetcherService.ztteam_validateStoryArticle(storyTitle, cleanContent);
+    const validation = this.fetcherService.ztteam_validateStoryArticle(storyTitle, cleanContent, sourceUrl);
     if (!validation.isValid) {
       throw new HttpException(`Nội dung không đạt tiêu chuẩn bài viết (${validation.reason})`, HttpStatus.BAD_REQUEST);
     }
@@ -127,7 +137,8 @@ export class ZTTeamCrawlerService {
         currentTemplateId = 'source_original';
         this.logger.log(`Sử dụng ảnh gốc chất lượng cao từ nguồn cào: ${image2kUrl}`);
       } else {
-        /** Nếu không có sẵn ảnh gốc, thử tạo ảnh bằng AI */
+        /** Nếu không có sẵn ảnh gốc, thử tạo ảnh bằng AI, nếu AI lỗi thì tự sinh ảnh bìa nghệ thuật mặc định */
+        let aiSuccess = false;
         try {
           this.logger.log(`Analyzing story and generating 2K image via AI for "${storyTitle}"...`);
           const promptData = await this.storyTestService.ztteam_generateStoryImagePrompt(
@@ -145,9 +156,23 @@ export class ZTTeamCrawlerService {
           imageLocalPath = imageResult.localPath;
           currentTemplateId = 'ai_generated';
           this.logger.log(`AI 2K image generated: ${image2kUrl}`);
+          aiSuccess = true;
         } catch (aiErr: any) {
-          this.logger.warn(`Lỗi tạo ảnh AI (${aiErr.message})`);
-          throw new Error(`[KHÔNG ĐỦ ĐIỀU KIỆN ẢNH] Bài viết không có ảnh gốc dự phòng và AI không thể tạo ảnh (${aiErr.message})`);
+          this.logger.warn(`Lỗi tạo ảnh AI (${aiErr.message}). Tự động sinh ảnh bìa nghệ thuật chất lượng cao thay thế.`);
+        }
+
+        if (!aiSuccess) {
+          try {
+            const fallbackCover = await this.ztteam_createDefaultStoryCover(storyTitle);
+            image2kUrl = fallbackCover.storageUrl;
+            imageLocalPath = fallbackCover.localPath;
+            currentTemplateId = 'cinematic_cover';
+            this.logger.log(`Default cinematic story cover generated: ${image2kUrl}`);
+          } catch (coverErr: any) {
+            this.logger.warn(`Không thể tạo ảnh bìa mặc định (${coverErr.message}). Cho phép bài viết xuất bản.`);
+            image2kUrl = '';
+            currentTemplateId = 'none';
+          }
         }
       }
     } else {
@@ -654,5 +679,88 @@ export class ZTTeamCrawlerService {
       where: { source_id: sourceId }
     });
     return { success: true };
+  }
+
+  /**
+   * ZTTeam: Tạo ảnh bìa nghệ thuật chuẩn 4:5 (1080x1350) cho các câu chuyện dạng thuần văn bản
+   * khi website nguồn không có ảnh và AI không thể tạo ảnh.
+   */
+  private async ztteam_createDefaultStoryCover(storyTitle: string): Promise<{ localPath: string; storageUrl: string }> {
+    const width = 1080;
+    const height = 1350;
+    const cleanTitle = (storyTitle || 'MYSTERY STORY').trim().toUpperCase();
+
+    // Tách tiêu đề thành tối đa 4 dòng hiển thị cân đối
+    const words = cleanTitle.split(/\s+/);
+    const lines: string[] = [];
+    let currentLine = '';
+    for (const w of words) {
+      if ((currentLine + ' ' + w).trim().length > 20) {
+        if (currentLine.trim()) lines.push(currentLine.trim());
+        currentLine = w;
+      } else {
+        currentLine += ' ' + w;
+      }
+    }
+    if (currentLine.trim()) lines.push(currentLine.trim());
+    const displayLines = lines.slice(0, 4);
+
+    const escapeXml = (str: string) => str.replace(/[<>&'"]/g, (c) => {
+      switch (c) {
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '&': return '&amp;';
+        case '\'': return '&apos;';
+        case '"': return '&quot;';
+        default: return c;
+      }
+    });
+
+    const startY = Math.max(500, 700 - displayLines.length * 40);
+    const svgLines = displayLines.map((l, i) =>
+      `<text x="540" y="${startY + i * 80}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="52" font-weight="900" fill="#ffffff" filter="url(#shadow)">${escapeXml(l)}</text>`
+    ).join('\n');
+
+    const svg = `
+    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#090d16" />
+          <stop offset="40%" stop-color="#1e1b4b" />
+          <stop offset="75%" stop-color="#0f172a" />
+          <stop offset="100%" stop-color="#020617" />
+        </linearGradient>
+        <radialGradient id="glow" cx="50%" cy="45%" r="60%">
+          <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.25"/>
+          <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.9"/>
+        </filter>
+      </defs>
+      <rect width="${width}" height="${height}" fill="url(#bg)" />
+      <rect width="${width}" height="${height}" fill="url(#glow)" />
+      <rect x="50" y="50" width="${width - 100}" height="${height - 100}" fill="none" stroke="#e2e8f0" stroke-opacity="0.2" stroke-width="2" rx="20" />
+      <text x="540" y="${startY - 80}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#60a5fa" letter-spacing="6">TRUE STORY • MYSTERY</text>
+      ${svgLines}
+      <line x1="440" y1="${startY + displayLines.length * 80 + 20}" x2="640" y2="${startY + displayLines.length * 80 + 20}" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" />
+      <text x="540" y="${startY + displayLines.length * 80 + 80}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="500" fill="#94a3b8">READ FULL STORY IN THE COMMENTS</text>
+    </svg>`;
+
+    const filename = `cover_${Date.now()}_${Math.floor(Math.random() * 1000)}.jpg`;
+    const imagesDir = ztteam_getImagesPath();
+    if (!fs.existsSync(imagesDir)) {
+      fs.mkdirSync(imagesDir, { recursive: true });
+    }
+    const localPath = path.join(imagesDir, filename);
+
+    await sharp(Buffer.from(svg))
+      .jpeg({ quality: 90 })
+      .toFile(localPath);
+
+    return {
+      localPath,
+      storageUrl: `/storage/images/${filename}`
+    };
   }
 }
