@@ -13,6 +13,12 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
   private readonly logger = new Logger(ZTTeamCrawlerCron.name);
   private rssParser: Parser;
   private isRunning = false;
+  /** ZTTeam Watchdog: thời điểm bắt đầu lượt chạy hiện tại, dùng để phát hiện cron bị treo */
+  private runStartedAt = 0;
+  /** Thời gian tối đa cho 1 nguồn cào trước khi bỏ qua (tránh 1 request treo khóa toàn bộ crawler) */
+  private static readonly SOURCE_TIMEOUT_MS = 15 * 60 * 1000;
+  /** Nếu 1 lượt chạy kéo dài quá ngưỡng này thì coi như bị treo và tự giải phóng khóa */
+  private static readonly STALE_LOCK_MS = 60 * 60 * 1000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -44,10 +50,19 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
       return;
     }
     if (this.isRunning) {
-      this.logger.warn('Crawler cron is already running, skipping this tick');
-      return;
+      const runningForMs = Date.now() - this.runStartedAt;
+      if (runningForMs < ZTTeamCrawlerCron.STALE_LOCK_MS) {
+        this.logger.warn('Crawler cron is already running, skipping this tick');
+        return;
+      }
+      /** ZTTeam Watchdog: lượt chạy trước bị treo quá lâu -> giải phóng khóa để crawler tiếp tục hoạt động */
+      const msg = `[CRAWLER WATCHDOG] Crawler cron bị treo ${Math.round(runningForMs / 60000)} phút. Tự động giải phóng khóa và chạy lại.`;
+      this.logger.error(msg);
+      this.telegramService.ztteam_sendMessage(`🚨 ${msg}`).catch(() => {});
     }
     this.isRunning = true;
+    const myRunStartedAt = Date.now();
+    this.runStartedAt = myRunStartedAt;
     this.logger.log('Starting Auto-Crawler Cron...');
 
     try {
@@ -92,17 +107,38 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
 
         this.logger.log(`Crawling source: ${source.source_url} for site: ${source.target_site.wp_url}`);
         
+        let timeoutHandle: NodeJS.Timeout | undefined;
         try {
-          await this.ztteam_crawlSource(source);
+          /** ZTTeam Watchdog: giới hạn thời gian cho từng nguồn, nguồn treo sẽ bị bỏ qua để xử lý nguồn tiếp theo */
+          await Promise.race([
+            this.ztteam_crawlSource(source),
+            new Promise((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error(`Source crawl timed out after ${ZTTeamCrawlerCron.SOURCE_TIMEOUT_MS / 60000} minutes`)),
+                ZTTeamCrawlerCron.SOURCE_TIMEOUT_MS,
+              );
+            }),
+          ]);
         } catch (error: any) {
-          this.logger.error(`Failed to crawl source ${source.id}: ${error.message}`);
+          this.logger.error(`Failed to crawl source ${source.source_url} (${source.id}): ${error.message}`);
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
+
+        /** Nếu watchdog đã giải phóng khóa và một lượt mới đã bắt đầu thì dừng lượt cũ này */
+        if (this.runStartedAt !== myRunStartedAt) {
+          this.logger.warn('Stale crawler run detected after watchdog reset. Stopping old run.');
+          return;
         }
       }
     } catch (error: any) {
       this.logger.error(`Crawler cron failed: ${error.message}`);
     } finally {
-      this.isRunning = false;
-      this.logger.log('Auto-Crawler Cron finished.');
+      /** Chỉ nhả khóa nếu đây vẫn là lượt chạy hiện hành (không ghi đè khóa của lượt mới sau watchdog) */
+      if (this.runStartedAt === myRunStartedAt) {
+        this.isRunning = false;
+        this.logger.log('Auto-Crawler Cron finished.');
+      }
     }
   }
 

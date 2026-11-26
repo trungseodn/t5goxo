@@ -545,15 +545,23 @@ export class ZTTeamPublisherCron {
       this.logger.log(`Reel ${reel.id} successfully auto-published to page ${page.name}`);
     } catch (error: any) {
       const extractedError = ztteam_extractErrorMessage(error);
+      const lowerError = extractedError.toLowerCase();
+      /** Lỗi cấp PAGE: Meta yêu cầu admin xác nhận danh tính để đăng với tư cách Page này (Code 368 / Subcode 4854002) */
       const isIdentityCheckpoint =
-        extractedError.includes('4854002') ||
-        extractedError.includes('xác nhận danh tính') ||
-        extractedError.includes('confirm your identity');
+        lowerError.includes('4854002') ||
+        lowerError.includes('xác nhận danh tính') ||
+        lowerError.includes('confirm your identity');
 
+      /**
+       * Lỗi cấp TÀI KHOẢN: Meta giới hạn tính năng toàn tài khoản (Code 368 / Subcode 1404112).
+       * ZTTeam: Không coi 4854002 là khóa tài khoản (dù cũng là Code 368) — trước đây 1 Page cần xác minh
+       * đã kéo theo cooldown 24h cho toàn bộ 30+ Page cùng tài khoản.
+       */
       const isAccountRestricted =
-        extractedError.includes('1404112') ||
-        extractedError.includes('368') ||
-        extractedError.includes('limited access to the site');
+        !isIdentityCheckpoint &&
+        (lowerError.includes('1404112') ||
+          lowerError.includes('limited access to the site') ||
+          /code 368\b/.test(lowerError));
 
       let currentRetries = (reel.post_retry_count || 0) + 1;
       this.logger.error(`Failed to auto-publish reel ${reel.id} (Attempt ${currentRetries}/3): ${extractedError}`);
@@ -771,15 +779,23 @@ export class ZTTeamPublisherCron {
       this.eventEmitter.emit('image.posted', { imageId: image.id, pageId: page.id });
     } catch (error: any) {
       const extractedError = ztteam_extractErrorMessage(error);
+      const lowerError = extractedError.toLowerCase();
+      /** Lỗi cấp PAGE: Meta yêu cầu admin xác nhận danh tính để đăng với tư cách Page này (Code 368 / Subcode 4854002) */
       const isIdentityCheckpoint =
-        extractedError.includes('4854002') ||
-        extractedError.includes('xác nhận danh tính') ||
-        extractedError.includes('confirm your identity');
+        lowerError.includes('4854002') ||
+        lowerError.includes('xác nhận danh tính') ||
+        lowerError.includes('confirm your identity');
 
+      /**
+       * Lỗi cấp TÀI KHOẢN: Meta giới hạn tính năng toàn tài khoản (Code 368 / Subcode 1404112).
+       * ZTTeam: Không coi 4854002 là khóa tài khoản (dù cũng là Code 368) — trước đây 1 Page cần xác minh
+       * đã kéo theo cooldown 24h cho toàn bộ 30+ Page cùng tài khoản.
+       */
       const isAccountRestricted =
-        extractedError.includes('1404112') ||
-        extractedError.includes('368') ||
-        extractedError.includes('limited access to the site');
+        !isIdentityCheckpoint &&
+        (lowerError.includes('1404112') ||
+          lowerError.includes('limited access to the site') ||
+          /code 368\b/.test(lowerError));
 
       let currentRetries = (image.post_retry_count || 0) + 1;
       this.logger.error(`Failed to auto-publish image ${image.id} (Attempt ${currentRetries}/3): ${extractedError}`);
